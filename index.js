@@ -247,7 +247,7 @@ app.use('/patients', (req, res, next) => {
 app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (req, res) => {
   try {
     const isSystemAdmin = req.session.user.roles.includes('system_admin');
-    const [rolesResult, doctorsResult, accountsResult] = await Promise.all([
+    const [rolesResult, doctorsResult, doctorAccountsResult, accountsResult] = await Promise.all([
       db.query(
         `SELECT role_key, name
          FROM roles
@@ -261,7 +261,17 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
         FROM doctors d
         LEFT JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
         WHERE dua.doctor_id IS NULL
+          AND d.is_annulled IS DISTINCT FROM TRUE
         ORDER BY d.name
+      `),
+      db.query(`
+        SELECT u.id, u.name, u.email
+        FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id
+        JOIN roles r ON r.id = ur.role_id AND r.role_key = 'doctor' AND r.active = TRUE
+        LEFT JOIN doctor_user_accounts dua ON dua.user_id = u.id
+        WHERE u.active = TRUE AND dua.user_id IS NULL
+        ORDER BY u.name
       `),
       db.query(`
         SELECT u.id, u.name, u.email, u.active,
@@ -276,9 +286,14 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
     res.render('admin_users', {
       roles: rolesResult.rows,
       doctors: doctorsResult.rows,
+      doctorAccounts: doctorAccountsResult.rows,
       accounts: accountsResult.rows,
-      message: req.query.created ? 'La cuenta fue creada correctamente.' : null,
-      error: req.query.error ? 'No se pudo crear la cuenta. Verifica que el correo no esté registrado.' : null,
+      message: req.query.linked
+        ? 'La cuenta médica quedó vinculada al perfil profesional.'
+        : (req.query.created ? 'La cuenta fue creada correctamente.' : null),
+      error: req.query.error === 'link'
+        ? 'No se pudo vincular la cuenta. Verifica que la cuenta tenga el perfil Médico y que ambos registros estén disponibles.'
+        : (req.query.error ? 'No se pudo crear la cuenta. Verifica que el correo no esté registrado.' : null),
     });
   } catch (error) {
     console.error('Error al cargar administración de usuarios:', error.message);
@@ -334,6 +349,60 @@ app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (r
     await client.query('ROLLBACK');
     console.error('Error al crear cuenta de usuario:', error.message);
     res.redirect('/admin/users?error=1');
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/admin/users/link-doctor', requireRole('system_admin', 'audit_security'), async (req, res) => {
+  const doctorId = String(req.body.doctor_id || '');
+  const userId = String(req.body.user_id || '');
+  if (!/^[1-9]\d*$/.test(doctorId) || !/^[1-9]\d*$/.test(userId)) {
+    return res.status(400).send('Selecciona un perfil médico y una cuenta válidos.');
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const doctorResult = await client.query(
+      `SELECT id, name
+       FROM doctors
+       WHERE id = $1 AND is_annulled IS DISTINCT FROM TRUE
+       FOR UPDATE`,
+      [Number(doctorId)]
+    );
+    const accountResult = await client.query(
+      `SELECT u.id
+       FROM users u
+       JOIN user_roles ur ON ur.user_id = u.id
+       JOIN roles r ON r.id = ur.role_id AND r.role_key = 'doctor' AND r.active = TRUE
+       WHERE u.id = $1 AND u.active = TRUE
+       FOR UPDATE OF u`,
+      [Number(userId)]
+    );
+    if (!doctorResult.rowCount || !accountResult.rowCount) {
+      throw new Error('El perfil médico o la cuenta disponible no existe.');
+    }
+
+    await client.query(
+      `INSERT INTO doctor_user_accounts (doctor_id, user_id, linked_by_user_id)
+       VALUES ($1, $2, $3)`,
+      [Number(doctorId), Number(userId), req.session.user.id]
+    );
+    await recordAccessEvent(client, req, {
+      eventType: 'doctor_account_linked',
+      resourceType: 'doctor_user_account',
+      resourceId: doctorId,
+      details: { linkedUserId: Number(userId) },
+    });
+    await client.query('COMMIT');
+    res.redirect('/admin/users?linked=1');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir la vinculación de cuenta médica:', rollbackError.message);
+    });
+    console.error('Error al vincular cuenta médica:', error.message);
+    res.redirect('/admin/users?error=link');
   } finally {
     client.release();
   }
@@ -1509,7 +1578,7 @@ app.post('/appointments/:id/status', async (req, res) => {
   const appointmentId = req.params.id;
   const { status } = req.body;
   const allowedStatuses = ['Waiting Room', 'In Consultation', 'Attended', 'Cancelled'];
-  if (!/^\d+$/.test(appointmentId) || !allowedStatuses.includes(status)) {
+  if (!/^[1-9]\d*$/.test(appointmentId) || !allowedStatuses.includes(status)) {
     return res.status(400).send('Identificador o estado de cita no válido.');
   }
   let timeColumnUpdate = '';
@@ -1521,13 +1590,40 @@ app.post('/appointments/:id/status', async (req, res) => {
     timeColumnUpdate = ', time_attended = CURRENT_TIMESTAMP';
   }
 
+  const client = await db.connect();
   try {
-    const query = `UPDATE appointments SET status = $1${timeColumnUpdate} WHERE id = $2`;
-    await db.query(query, [status, appointmentId]);
-    res.redirect('/agenda');
+    await client.query('BEGIN');
+    const appointmentResult = await client.query(
+      'SELECT appointment_date::text AS appointment_date, status FROM appointments WHERE id = $1 FOR UPDATE',
+      [Number(appointmentId)]
+    );
+    if (!appointmentResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).send('No se encontró la cita que intentas actualizar.');
+    }
+
+    const previousStatus = appointmentResult.rows[0].status;
+    const appointmentDate = String(appointmentResult.rows[0].appointment_date).slice(0, 10);
+    await client.query(
+      `UPDATE appointments SET status = $1${timeColumnUpdate} WHERE id = $2`,
+      [status, Number(appointmentId)]
+    );
+    await recordAccessEvent(client, req, {
+      eventType: 'appointment_status_changed',
+      resourceType: 'appointment',
+      resourceId: appointmentId,
+      details: { previousStatus, newStatus: status },
+    });
+    await client.query('COMMIT');
+    res.redirect(`/agenda?date=${encodeURIComponent(appointmentDate)}#appointment-${appointmentId}`);
   } catch (err) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir el cambio de estado de la cita:', rollbackError.message);
+    });
     console.error('Error al actualizar estado de la cita:', err.message);
     res.status(500).send('Error interno al actualizar la cita.');
+  } finally {
+    client.release();
   }
 });
 

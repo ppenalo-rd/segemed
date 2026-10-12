@@ -21,6 +21,41 @@
 
     <section class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
+            <h2 class="h5 mb-3">Vincular cuenta médica existente</h2>
+            <p class="text-muted">Vincula un perfil profesional con una cuenta activa que ya tenga el rol Médico. Esto habilita al profesional para recibir citas.</p>
+            <% if (doctors.length && doctorAccounts.length) { %>
+            <form action="/admin/users/link-doctor" method="POST" class="row g-3">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="col-md-5">
+                    <label class="form-label" for="link_doctor_id">Perfil médico</label>
+                    <select class="form-select" id="link_doctor_id" name="doctor_id" required>
+                        <option value="">Seleccione médico...</option>
+                        <% doctors.forEach((doctor) => { %>
+                            <option value="<%= doctor.id %>"><%= doctor.name %> · <%= doctor.main_specialty %></option>
+                        <% }) %>
+                    </select>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label" for="link_user_id">Cuenta con rol Médico</label>
+                    <select class="form-select" id="link_user_id" name="user_id" required>
+                        <option value="">Seleccione cuenta...</option>
+                        <% doctorAccounts.forEach((account) => { %>
+                            <option value="<%= account.id %>"><%= account.name %> · <%= account.email %></option>
+                        <% }) %>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button class="btn btn-outline-primary w-100" type="submit">Vincular</button>
+                </div>
+            </form>
+            <% } %>
+            <% if (!doctors.length) { %><p class="text-muted mb-0">No hay perfiles médicos activos sin vincular.</p><% } %>
+            <% if (!doctorAccounts.length) { %><p class="text-muted mb-0">No hay cuentas activas con rol Médico disponibles para vincular.</p><% } %>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
             <h2 class="h5 mb-3">Crear cuenta de acceso</h2>
             <form action="/admin/users" method="POST" class="row g-3">
                 <input type="hidden" name="_csrf" value="<%= csrfToken %>">

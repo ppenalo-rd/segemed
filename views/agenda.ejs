@@ -377,13 +377,23 @@
                   <div class="col-md-6">
                       <label class="form-label fw-bold text-secondary">Médico Tratante</label>
                       <select name="doctor_id" id="appointmentDoctor" class="form-select border-primary" required>
-                          <option value="">Seleccione especialista con cuenta vinculada...</option>
+                          <option value=""><%= doctores.length ? 'Seleccione médico tratante...' : 'No hay médicos habilitados para agendar' %></option>
                           <% if (typeof doctores !== 'undefined') { %>
                               <% doctores.forEach(d => { %>
                                   <option value="<%= d.id %>">Dr. <%= d.name %> - <%= d.main_specialty %></option>
                               <% }) %>
                           <% } %>
                       </select>
+                      <% if (!doctores.length) { %>
+                          <div class="form-text text-danger">
+                              No hay perfiles médicos activos vinculados a una cuenta con rol Médico.
+                              <% if (currentUser.roles.includes('system_admin') || currentUser.roles.includes('audit_security')) { %>
+                                  <a href="/admin/users">Vincule el perfil y la cuenta en Usuarios y accesos</a>.
+                              <% } else { %>
+                                  Solicite al administrador que vincule el perfil médico con su cuenta.
+                              <% } %>
+                          </div>
+                      <% } %>
                   </div>
                   <!-- Sucursal -->
                   <div class="col-md-4">

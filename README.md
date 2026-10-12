@@ -61,11 +61,13 @@ Después de iniciar sesión, la aplicación redirige a `/dashboard`, el menú pr
 
 Las rutas de los módulos conservan sus propios controles de autorización; ocultar una tarjeta no sustituye las verificaciones RBAC del servidor. En Facturación y Caja, `system_admin` tiene acceso de consulta a las facturas, mientras que solo `admissions` puede crear o modificar facturas, emitirlas, registrar pagos o procesar reversiones.
 
+En `/admin/users`, el administrador puede crear una cuenta con perfil Médico y asociarla a un profesional existente, o vincular un perfil médico sin asignar a una cuenta activa ya existente con rol Médico. Solo los perfiles asociados aparecen como médicos disponibles para agendar; la agenda indica cómo completar el vínculo cuando no hay ninguno habilitado.
+
 ### Calendario médico
 
 La ruta `/agenda` ofrece una vista mensual, semanal y de lista con filtros por médico y sede. Las citas se cargan bajo demanda desde `GET /api/calendar/appointments` usando el rango visible del calendario; el rango se valida y limita a 62 días. El listado operativo queda acotado a los últimos tres días y los próximos 30; al abrir una cita histórica, `?date=YYYY-MM-DD` centra el listado y calendario en esa fecha. Al pasar o enfocar una cita se muestran hora, paciente, documento, motivo, médico, sede y estado. Al seleccionarla se abre su fila en la agenda. Al seleccionar un día se abre el formulario de agendamiento con la fecha precargada.
 
-La creación continúa usando `POST /appointments/create` y `GET /api/doctor-availability`; el servidor vuelve a validar la matriz de horarios, duración configurada para el tipo de atención y conflictos antes de guardar. Las cuentas con rol `doctor` solo reciben su propio calendario salvo que tengan además permisos de administración, admisión o auditoría. La vista carga FullCalendar 6.1.19 desde jsDelivr; el Content Security Policy permite ese origen para scripts.
+La creación continúa usando `POST /appointments/create` y `GET /api/doctor-availability`; el servidor vuelve a validar la matriz de horarios, duración configurada para el tipo de atención y conflictos antes de guardar. Los cambios de estado se auditan y vuelven a mostrar la cita enfocada en su fecha original. Las cuentas con rol `doctor` solo reciben su propio calendario salvo que tengan además permisos de administración, admisión o auditoría. La vista carga FullCalendar 6.1.19 desde jsDelivr; el Content Security Policy permite ese origen para scripts.
 
 ### Refresco programado de reportería
 
