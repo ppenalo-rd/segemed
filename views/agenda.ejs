@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMR - Sala de Espera y Agenda</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<div class="container my-5">
+    <!-- Cabecera -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="text-primary fw-bold">Sala de Espera y Agenda</h2>
+            <p class="text-muted mb-0">Control Operativo - SIGEMED C.A.</p>
+        </div>
+        <div>
+            <!-- Botón que dispara el Modal de Agendamiento -->
+            <button type="button" class="btn btn-primary fw-bold px-4 shadow-sm me-2" data-bs-toggle="modal" data-bs-target="#nuevaCitaModal">
+                + Nueva Cita
+            </button>
+            <a href="/pacientes" class="btn btn-secondary shadow-sm">← Volver al Directorio</a>
+        </div>
+    </div>
+
+    <!-- Tabla Dinámica de Citas -->
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-dark text-white fw-bold">
+            Flujo de Pacientes
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="ps-3">Paciente</th>
+                            <th>DNI</th>
+                            <th>Fecha y Hora Cita</th>
+                            <th>Médico</th>
+                            <th>Motivo</th>
+                            <th>Modalidad</th>
+                            <th>Estado Actual</th>
+                            <th class="text-center">Actualizar Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% if (citas && citas.length > 0) { %>
+                            <% citas.forEach(cita => { %>
+                                <tr>
+                                    <td class="fw-bold ps-3"><%= cita.first_name %> <%= cita.last_name %></td>
+                                    <td><code><%= cita.dni_document %></code></td>
+                                    <td>
+                                        <%= new Date(cita.appointment_date).toLocaleDateString('es-ES') %><br>
+                                        <small class="text-muted">
+                                            <%= cita.time_scheduled ? String(cita.time_scheduled).substring(0,5) : 'Sin hora' %>
+                                        </small>
+                                    </td>
+                                    <td><%= cita.doctor_name || 'Médico no asociado' %></td>
+                                    <td><%= cita.reason_for_visit || 'No especificado' %></td>
+                                    <td><%= cita.care_mode === 'teleconsultation' ? 'Teleconsulta' : 'Presencial' %></td>
+                                    
+                                    <!-- Renderizado Visual del Estado -->
+                                    <td>
+                                        <% 
+                                            let badgeClass = 'bg-secondary';
+                                            let estadoEs = cita.status;
+                                            
+                                            if (cita.status === 'Scheduled') { badgeClass = 'bg-primary'; estadoEs = 'Programada'; }
+                                            else if (cita.status === 'Waiting Room') { badgeClass = 'bg-warning text-dark'; estadoEs = 'En Sala de Espera'; }
+                                            else if (cita.status === 'In Consultation') { badgeClass = 'bg-info text-dark'; estadoEs = 'En Consulta'; }
+                                            else if (cita.status === 'Attended') { badgeClass = 'bg-success'; estadoEs = 'Atendido'; }
+                                            else if (cita.status === 'Cancelled') { badgeClass = 'bg-danger'; estadoEs = 'Cancelado'; }
+                                        %>
+                                        <span class="badge <%= badgeClass %>"><%= estadoEs %></span>
+                                    </td>
+                                    
+                                    <!-- Formulario POST para cambiar el estado -->
+                                    <td class="text-center">
+                                        <form action="/appointments/<%= cita.id %>/status" method="POST" class="d-flex justify-content-center align-items-center">
+                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                            <select name="status" class="form-select form-select-sm w-auto me-2 shadow-sm" required>
+                                                <option value="" disabled selected>Mover a...</option>
+                                                <option value="Waiting Room">🧍 Sala de Espera</option>
+                                                <option value="In Consultation">🩺 En Consulta</option>
+                                                <option value="Attended">✅ Finalizado</option>
+                                                <option value="Cancelled">❌ Cancelar</option>
+                                            </select>
+                                            <button type="submit" class="btn btn-sm btn-dark fw-bold shadow-sm">Aplicar</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            <% }) %>
+                        <% } else { %>
+                            <tr>
+                                <td colspan="8" class="text-center py-5 text-muted">
+                                    No hay citas registradas en la base de datos.
+                                </td>
+                            </tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Agendar Nueva Cita -->
+<div class="modal fade" id="nuevaCitaModal" tabindex="-1" aria-labelledby="nuevaCitaModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content border-0 shadow">
+      <div class="modal-header bg-primary text-white">
+        <h5 class="modal-title fw-bold" id="nuevaCitaModalLabel">Agendar atención</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="appointmentForm" action="/appointments/create" method="POST">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <div class="modal-body bg-light">
+              <div id="bookingFeedback" class="alert alert-danger" role="alert" hidden></div>
+              <div class="row g-3">
+                  <!-- Paciente -->
+                  <div class="col-md-6 position-relative">
+                      <label class="form-label fw-bold text-secondary" for="patientSearch">Buscar paciente</label>
+                      <input class="form-control border-primary" id="patientSearch" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="patientSearchResults" aria-autocomplete="list" placeholder="Nombre, apellido o documento" required>
+                      <input type="hidden" name="patient_id" id="appointmentPatient" required>
+                      <input type="hidden" id="patientSearchCsrf" value="<%= csrfToken %>">
+                      <div id="patientSearchResults" class="list-group position-absolute w-100 shadow" role="listbox" style="z-index: 1055"></div>
+                      <div class="form-text" id="selectedPatientStatus" aria-live="polite">Selecciona un resultado o registra un nuevo paciente.</div>
+                      <button class="btn btn-sm btn-outline-primary mt-2" id="newPatientButton" type="button">+ Registrar paciente y continuar</button>
+                  </div>
+                  <fieldset id="quickPatientFields" class="col-12 border rounded p-3" hidden disabled>
+                      <legend class="float-none w-auto px-2 fs-6 fw-bold text-primary">Alta rápida del paciente</legend>
+                      <div class="row g-3">
+                          <div class="col-md-6">
+                              <label class="form-label" for="quickFirstName">Nombres</label>
+                              <input class="form-control" id="quickFirstName" name="first_name" maxlength="100">
+                          </div>
+                          <div class="col-md-6">
+                              <label class="form-label" for="quickLastName">Apellidos</label>
+                              <input class="form-control" id="quickLastName" name="last_name" maxlength="100">
+                          </div>
+                          <div class="col-md-4">
+                              <label class="form-label" for="quickDocumentType">Identificación</label>
+                              <select class="form-select" id="quickDocumentType" name="document_type">
+                                  <option value="cedula">Cédula venezolana</option>
+                                  <option value="passport">Pasaporte extranjero</option>
+                                  <option value="none">Menor sin documento propio</option>
+                              </select>
+                          </div>
+                          <div class="col-md-4" id="quickDocumentNumberField">
+                              <label class="form-label" for="quickDocumentNumber">Número de documento</label>
+                              <input class="form-control" id="quickDocumentNumber" name="dni_document" maxlength="40">
+                          </div>
+                          <div class="col-md-4">
+                              <label class="form-label" for="quickBirthDate">Fecha de nacimiento</label>
+                              <input class="form-control" id="quickBirthDate" name="birth_date" type="date">
+                          </div>
+                          <div class="col-md-4">
+                              <label class="form-label" for="quickGender">Género (opcional)</label>
+                              <select class="form-select" id="quickGender" name="gender">
+                                  <option value="">Sin especificar</option><option value="Masculino">Masculino</option>
+                                  <option value="Femenino">Femenino</option><option value="Otro">Otro</option>
+                              </select>
+                          </div>
+                          <div class="col-md-4">
+                              <label class="form-label" for="quickPhone">Teléfono (opcional)</label>
+                              <input class="form-control" id="quickPhone" name="phone" type="tel">
+                          </div>
+                          <div class="col-md-4">
+                              <label class="form-label" for="quickEmail">Correo (opcional)</label>
+                              <input class="form-control" id="quickEmail" name="email" type="email">
+                          </div>
+                          <div class="col-12" id="guardianFields" hidden>
+                              <div class="row g-3">
+                                  <div class="col-md-4">
+                                      <label class="form-label" for="guardianName">Nombre del representante</label>
+                                      <input class="form-control" id="guardianName" name="guardian_name" maxlength="160">
+                                  </div>
+                                  <div class="col-md-4">
+                                      <label class="form-label" for="guardianDocumentType">Documento del representante</label>
+                                      <select class="form-select" id="guardianDocumentType" name="guardian_document_type">
+                                          <option value="cedula">Cédula venezolana</option><option value="passport">Pasaporte</option>
+                                      </select>
+                                  </div>
+                                  <div class="col-md-4">
+                                      <label class="form-label" for="guardianDocumentNumber">Número de documento</label>
+                                      <input class="form-control" id="guardianDocumentNumber" name="guardian_document_number" maxlength="40">
+                                  </div>
+                                  <div class="col-md-4">
+                                      <label class="form-label" for="guardianRelationship">Parentesco o relación</label>
+                                      <input class="form-control" id="guardianRelationship" name="guardian_relationship" maxlength="60">
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </fieldset>
+                  <!-- Médico -->
+                  <div class="col-md-6">
+                      <label class="form-label fw-bold text-secondary">Médico Tratante</label>
+                      <select name="doctor_id" id="appointmentDoctor" class="form-select border-primary" required>
+                          <option value="">Seleccione especialista con cuenta vinculada...</option>
+                          <% if (typeof doctores !== 'undefined') { %>
+                              <% doctores.forEach(d => { %>
+                                  <option value="<%= d.id %>">Dr. <%= d.name %> - <%= d.main_specialty %></option>
+                              <% }) %>
+                          <% } %>
+                      </select>
+                  </div>
+                  <!-- Sucursal -->
+                  <div class="col-md-4">
+                      <label class="form-label fw-bold text-secondary">Sucursal</label>
+                      <select name="branch_id" class="form-select border-primary" required>
+                          <option value="">Seleccione sucursal...</option>
+                          <% if (typeof sucursales !== 'undefined') { %>
+                              <% sucursales.forEach(s => { %>
+                                  <option value="<%= s.id %>"><%= s.name %></option>
+                              <% }) %>
+                          <% } %>
+                      </select>
+                  </div>
+                  <div class="col-md-4">
+                      <label class="form-label fw-bold text-secondary" for="appointmentType">Tipo de atención</label>
+                      <select name="appointment_type" id="appointmentType" class="form-select border-primary" required>
+                          <option value="consultation">Consulta</option>
+                          <option value="follow_up">Control / seguimiento</option>
+                          <option value="minor_procedure">Procedimiento menor</option>
+                      </select>
+                  </div>
+                  <!-- Fecha -->
+                  <div class="col-md-4">
+                      <label class="form-label fw-bold text-secondary">Fecha de Cita</label>
+                      <input type="date" name="appointment_date" class="form-control border-primary" required>
+                  </div>
+                  <!-- Hora (duración resuelta por médico/tipo de atención) -->
+                  <div class="col-md-4">
+                      <label class="form-label fw-bold text-secondary">Hora Asignada</label>
+                      <select name="appointment_time" id="timeSlotSelector" class="form-select border-primary" required>
+                          <option value="">Seleccione primero médico, sede y fecha...</option>
+                      </select>
+                  </div>
+                  <div class="col-md-4">
+                      <label class="form-label fw-bold text-secondary" for="careMode">Modalidad</label>
+                      <select name="care_mode" id="careMode" class="form-select border-primary" required>
+                          <option value="in_person">Presencial</option>
+                          <option value="teleconsultation">Teleconsulta</option>
+                      </select>
+                  </div>
+                  <div class="col-12" id="telehealthUrlField" hidden>
+                      <label class="form-label fw-bold text-secondary" for="telehealthUrl">Enlace de teleconsulta HTTPS</label>
+                      <input name="telehealth_url" id="telehealthUrl" class="form-control" type="url" placeholder="https://...">
+                      <div class="form-text">El enlace se mostrará solo a personal autorizado.</div>
+                  </div>
+                  <!-- NUEVO CAMPO: Motivo de la Cita -->
+                  <div class="col-12">
+                      <label class="form-label fw-bold text-secondary">Motivo de la Cita</label>
+                      <input type="text" name="reason_for_visit" class="form-control border-primary" placeholder="Ej. Control rutinario, primera vez, dolor general..." required>
+                  </div>
+              </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="submit" class="btn btn-success fw-bold px-4">Confirmar Agendamiento</button>
+          </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Bootstrap 5 JS Bundle -->
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+
+<!-- Script dinámico de alta rápida y consulta de disponibilidad. -->
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const doctorSelect = document.getElementById('appointmentDoctor');
+        const branchSelect = document.querySelector('select[name="branch_id"]');
+        const dateInput = document.querySelector('input[name="appointment_date"]');
+        const patientIdInput = document.getElementById('appointmentPatient');
+        const patientSearch = document.getElementById('patientSearch');
+        const patientSearchResults = document.getElementById('patientSearchResults');
+        const selectedPatientStatus = document.getElementById('selectedPatientStatus');
+        const newPatientButton = document.getElementById('newPatientButton');
+        const appointmentType = document.getElementById('appointmentType');
+        const timeSelector = document.getElementById('timeSlotSelector');
+        const quickPatientFields = document.getElementById('quickPatientFields');
+        const documentType = document.getElementById('quickDocumentType');
+        const guardianFields = document.getElementById('guardianFields');
+        const documentNumber = document.getElementById('quickDocumentNumber');
+        const guardianName = document.getElementById('guardianName');
+        const guardianDocumentNumber = document.getElementById('guardianDocumentNumber');
+        const careMode = document.getElementById('careMode');
+        const telehealthUrl = document.getElementById('telehealthUrl');
+        const telehealthUrlField = document.getElementById('telehealthUrlField');
+        let searchTimer;
+
+        function updateQuickPatientFields() {
+            const isNew = patientIdInput.value === 'new';
+            quickPatientFields.hidden = !isNew;
+            quickPatientFields.disabled = !isNew;
+            patientSearch.disabled = isNew;
+            patientSearch.required = !isNew;
+            newPatientButton.textContent = isNew ? 'Cancelar alta rápida' : '+ Registrar paciente y continuar';
+            patientSearchResults.replaceChildren();
+            patientSearch.setAttribute('aria-expanded', 'false');
+            selectedPatientStatus.textContent = isNew
+                ? 'Completa los datos del paciente; al confirmar se creará y quedará asociado a la cita.'
+                : (patientIdInput.value ? 'Paciente seleccionado.' : 'Selecciona un resultado o registra un nuevo paciente.');
+            quickPatientFields.querySelector('#quickFirstName').required = isNew;
+            quickPatientFields.querySelector('#quickLastName').required = isNew;
+            documentNumber.required = isNew && documentType.value !== 'none';
+            guardianFields.hidden = !isNew || documentType.value !== 'none';
+            guardianName.required = isNew && documentType.value === 'none';
+            guardianDocumentNumber.required = isNew && documentType.value === 'none';
+            fetchAvailableSlots();
+        }
+
+        function updateTelehealthFields() {
+            const isTeleconsultation = careMode.value === 'teleconsultation';
+            telehealthUrlField.hidden = !isTeleconsultation;
+            telehealthUrl.required = isTeleconsultation;
+            if (!isTeleconsultation) telehealthUrl.value = '';
+        }
+
+        async function fetchAvailableSlots() {
+            const doctorId = doctorSelect.value;
+            const branchId = branchSelect.value;
+            const dateVal = dateInput.value;
+
+            // Limpiar selector de horas
+            timeSelector.innerHTML = '<option value="">Seleccione hora...</option>';
+
+            if (!doctorId || !branchId || !dateVal) return;
+
+            try {
+                const params = new URLSearchParams({
+                    doctor_id: doctorId,
+                    branch_id: branchId,
+                    date: dateVal,
+                    appointment_type: appointmentType.value,
+                });
+                if (patientIdInput.value && patientIdInput.value !== 'new') params.set('patient_id', patientIdInput.value);
+                const response = await fetch(`/api/doctor-availability?${params}`);
+                const data = await response.json();
+
+                if (!data.available) {
+                    const option = document.createElement('option');
+                    option.value = "";
+                    option.textContent = data.message || "No hay disponibilidad para esta selección";
+                    timeSelector.appendChild(option);
+                    return;
+                }
+
+                data.slots.forEach((slot) => {
+                    const option = document.createElement('option');
+                    option.value = slot;
+                    option.textContent = slot;
+                    timeSelector.appendChild(option);
+                });
+
+                if (data.slots.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = "";
+                    option.textContent = "Sin turnos disponibles para la duración seleccionada";
+                    timeSelector.appendChild(option);
+                }
+                timeSelector.setAttribute('aria-label', `Hora de atención; duración ${data.duration_minutes} minutos`);
+
+            } catch (error) {
+                console.error('Error al obtener la disponibilidad:', error);
+                const option = document.createElement('option');
+                option.value = "";
+                option.textContent = "No se pudo cargar la disponibilidad";
+                timeSelector.appendChild(option);
+            }
+        }
+
+        doctorSelect.addEventListener('change', fetchAvailableSlots);
+        branchSelect.addEventListener('change', fetchAvailableSlots);
+        dateInput.addEventListener('change', fetchAvailableSlots);
+        appointmentType.addEventListener('change', fetchAvailableSlots);
+        documentType.addEventListener('change', updateQuickPatientFields);
+        careMode.addEventListener('change', updateTelehealthFields);
+        newPatientButton.addEventListener('click', () => {
+            if (patientIdInput.value === 'new') {
+                patientIdInput.value = '';
+                patientSearch.value = '';
+                patientSearch.disabled = false;
+                updateQuickPatientFields();
+                return;
+            }
+            patientIdInput.value = 'new';
+            updateQuickPatientFields();
+            quickPatientFields.querySelector('#quickFirstName').focus();
+        });
+        patientSearch.addEventListener('input', () => {
+            patientIdInput.value = '';
+            updateQuickPatientFields();
+            const term = patientSearch.value.trim();
+            clearTimeout(searchTimer);
+            if (term.length < 2) return;
+            searchTimer = setTimeout(async () => {
+                try {
+                    const response = await fetch('/api/patients/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.getElementById('patientSearchCsrf').value },
+                        body: JSON.stringify({ query: term }),
+                    });
+                    const results = await response.json();
+                    patientSearchResults.replaceChildren();
+                    results.forEach((patient) => {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = 'list-group-item list-group-item-action';
+                        button.setAttribute('role', 'option');
+                        button.textContent = `${patient.last_name}, ${patient.first_name} · ${patient.document_type === 'none' ? 'Sin documento propio' : patient.dni_document}`;
+                        button.addEventListener('click', () => {
+                            patientIdInput.value = patient.id;
+                            patientSearch.value = button.textContent;
+                            updateQuickPatientFields();
+                            fetchAvailableSlots();
+                        });
+                        patientSearchResults.appendChild(button);
+                    });
+                    if (results.length === 0) {
+                        const empty = document.createElement('div');
+                        empty.className = 'list-group-item text-muted';
+                        empty.textContent = 'No se encontraron pacientes. Puedes registrar uno nuevo.';
+                        patientSearchResults.appendChild(empty);
+                    }
+                    patientSearch.setAttribute('aria-expanded', results.length > 0 ? 'true' : 'false');
+                } catch (error) {
+                    console.error('Error al buscar paciente:', error);
+                    selectedPatientStatus.textContent = 'No se pudo buscar. Intenta de nuevo.';
+                }
+            }, 250);
+        });
+        document.getElementById('nuevaCitaModal').addEventListener('hidden.bs.modal', () => {
+            document.getElementById('appointmentForm').reset();
+            patientIdInput.value = '';
+            patientSearch.disabled = false;
+            patientSearchResults.replaceChildren();
+            updateQuickPatientFields();
+            updateTelehealthFields();
+            timeSelector.innerHTML = '<option value="">Seleccione primero médico, sede y fecha...</option>';
+        });
+        document.getElementById('appointmentForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            if (!form.reportValidity()) return;
+            if (patientIdInput.value === 'new') {
+                const normalizedDocument = documentNumber.value.trim();
+                if (documentType.value !== 'none' && normalizedDocument) {
+                    selectedPatientStatus.textContent = 'Se verificará el documento al guardar para evitar duplicados.';
+                }
+            }
+            const submitButton = form.querySelector('button[type="submit"]');
+            const feedback = document.getElementById('bookingFeedback');
+            submitButton.disabled = true;
+            feedback.hidden = true;
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: { Accept: 'application/json' },
+                    body: new FormData(form),
+                });
+                if (!response.ok) {
+                    const message = response.headers.get('content-type')?.includes('application/json')
+                        ? (await response.json()).error
+                        : await response.text();
+                    throw new Error(message || 'No se pudo agendar la cita.');
+                }
+                window.location.assign('/agenda');
+            } catch (error) {
+                feedback.textContent = error.message;
+                feedback.hidden = false;
+            } finally {
+                submitButton.disabled = false;
+            }
+        });
+        updateTelehealthFields();
+    });
+</script>
+</body>
+</html>

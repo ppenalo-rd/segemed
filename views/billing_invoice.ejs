@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Factura <%= invoice.invoice_number || `Borrador #${invoice.id}` %> | SIGEMED</title>
+    <link rel="stylesheet" href="/assets/bootstrap/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+<main class="container py-4">
+    <% if (!canProcessBilling) { %>
+        <div class="alert alert-info" role="status">Acceso de consulta: solo el personal de Admisión/Caja puede modificar facturas o procesar cobros.</div>
+    <% } %>
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div><h1 class="h3 mb-1"><%= invoice.invoice_number || `Borrador #${invoice.id}` %></h1><div><%= invoice.first_name %> <%= invoice.last_name %> · <%= invoice.branch_name %></div></div>
+        <a class="btn btn-outline-secondary" href="/billing">Volver a Caja</a>
+    </div>
+    <section class="card mb-4">
+        <div class="card-body d-flex flex-wrap justify-content-between gap-3">
+            <div><span class="text-muted">Estado</span><div class="fw-bold"><%= {draft:'Borrador', pending:'Pendiente', paid:'Pagado', void:'Anulado'}[invoice.status] %></div></div>
+            <div><span class="text-muted">Moneda y unidades por USD</span><div class="fw-bold"><%= invoice.currency %> · <%= invoice.exchange_rate_units_per_usd || '—' %> por USD</div></div>
+            <div><span class="text-muted">Total</span><div class="fw-bold"><%= invoice.currency %> <%= invoice.total %></div></div>
+            <div><span class="text-muted">Saldo (equivalente de factura)</span><div class="fw-bold"><%= invoice.currency %> <%= balance %></div></div>
+            <% if (invoice.status !== 'draft' && invoice.status !== 'void') { %><a class="btn btn-outline-primary align-self-center" href="/billing/invoices/<%= invoice.id %>/print">Imprimir comprobante</a><% } %>
+        </div>
+    </section>
+    <section class="card mb-4">
+        <div class="card-header fw-bold">Servicios facturados</div>
+        <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Servicio</th><th>Tipo</th><th>Origen clínico</th><th>Cant.</th><th>Precio unitario</th><th>Total</th></tr></thead><tbody>
+        <% items.forEach((item) => { %><tr><td><%= item.description %></td><td><%= {consultation:'Consulta', procedure:'Procedimiento', study:'Estudio'}[item.category] || item.category %></td><td><%= item.source_label || '—' %></td><td><%= item.quantity %></td><td><%= invoice.currency %> <%= item.unit_price %></td><td><%= invoice.currency %> <%= item.line_total %></td></tr><% }) %>
+        <% if (!items.length) { %><tr><td colspan="6" class="text-center text-muted py-3">Aún no se agregaron servicios.</td></tr><% } %>
+        </tbody><tfoot><tr><th colspan="5" class="text-end">Subtotal</th><th><%= invoice.currency %> <%= invoice.subtotal %></th></tr><tr><th colspan="5" class="text-end">Impuestos (pendiente de configuración normativa)</th><th><%= invoice.currency %> <%= invoice.tax %></th></tr><tr><th colspan="5" class="text-end">Total</th><th><%= invoice.currency %> <%= invoice.total %></th></tr></tfoot></table></div>
+    </section>
+    <% if (canProcessBilling && invoice.status === 'draft') { %>
+    <section class="card mb-4">
+        <div class="card-header fw-bold">Agregar servicio (borrador)</div>
+        <div class="card-body">
+            <form method="POST" action="/billing/invoices/<%= invoice.id %>/items" class="row g-3">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="col-md-6"><label class="form-label">Servicio por sede</label><select class="form-select" name="service_id" required><option value="">Selecciona servicio</option><% services.forEach((service) => { %><option value="<%= service.id %>"><%= service.name %> · <%= {consultation:'Consulta', procedure:'Procedimiento', study:'Estudio'}[service.service_type] %> · USD <%= service.price_usd %></option><% }) %></select></div>
+                <div class="col-md-2"><label class="form-label">Cantidad</label><input class="form-control" name="quantity" type="number" min="0.01" step="0.01" value="1" required></div>
+                <div class="col-md-4"><label class="form-label">Consulta, procedimiento o estudio</label><select class="form-select" name="source_ref" required><option value="">Selecciona origen</option><optgroup label="Consultas"><% consultations.forEach((source) => { %><option value="consultation:<%= source.id %>">Consulta #<%= source.id %> — <%= source.created_at.toLocaleDateString('es-ES') %></option><% }) %></optgroup><optgroup label="Procedimientos"><% procedures.forEach((source) => { %><option value="procedure:<%= source.id %>"><%= source.name %> — #<%= source.id %></option><% }) %></optgroup><optgroup label="Estudios"><% studies.forEach((source) => { %><option value="study:<%= source.id %>"><%= source.name %> — #<%= source.id %></option><% }) %></optgroup></select></div>
+                <div class="col-12"><button class="btn btn-primary" type="submit">Agregar al borrador</button></div>
+            </form>
+        </div>
+    </section>
+    <div class="d-flex gap-2 mb-4">
+        <form method="POST" action="/billing/invoices/<%= invoice.id %>/issue"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn btn-success" type="submit" <%= items.length ? '' : 'disabled' %>>Emitir factura y congelar importes</button></form>
+        <form method="POST" action="/billing/invoices/<%= invoice.id %>/void"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn btn-outline-danger" type="submit">Anular borrador</button></form>
+    </div>
+    <% } %>
+    <% if (canProcessBilling && invoice.status === 'pending') { %>
+    <section class="card mb-4">
+        <div class="card-header fw-bold">Registrar abono</div>
+        <div class="card-body">
+            <form method="POST" action="/billing/invoices/<%= invoice.id %>/payments" class="row g-3">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="col-md-3"><label class="form-label">Moneda recibida</label><select class="form-select" name="currency" required><% currencies.forEach((currency) => { %><option value="<%= currency.code %>"><%= currency.code %> · <%= currency.units_per_usd %> por USD</option><% }) %></select></div>
+                <div class="col-md-3"><label class="form-label">Importe recibido</label><input class="form-control" name="amount" type="number" min="0.01" step="0.01" required></div>
+                <div class="col-md-6"><label class="form-label">Referencia de pago (opcional)</label><input class="form-control" name="reference" maxlength="160"></div>
+                <div class="col-12"><button class="btn btn-success" type="submit">Registrar abono</button><span class="form-text ms-2">Se conserva la moneda y la tasa aplicada; no se permiten sobrepagos.</span></div>
+            </form>
+        </div>
+    </section>
+    <% } %>
+    <section class="card mb-4">
+        <div class="card-header fw-bold">Libro de cobros y devoluciones (inmutable)</div>
+        <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Fecha</th><th>Tipo</th><th>Importe</th><th>Equiv. USD</th><th>Referencia</th><th>Operador</th><th></th></tr></thead><tbody>
+        <% transactions.forEach((entry) => { %><tr><td><%= entry.created_at.toLocaleString('es-ES') %></td><td><%= entry.transaction_type === 'payment' ? 'Cobro' : `Devolución del cobro #${entry.reversal_of_transaction_id}` %></td><td><%= entry.currency %> <%= entry.amount %></td><td>USD <%= entry.amount_usd %></td><td><%= entry.reference || '—' %></td><td><%= entry.operator_name %></td><td><% if (canProcessBilling && entry.transaction_type === 'payment' && !entry.reversed) { %><form method="POST" action="/billing/invoices/<%= invoice.id %>/transactions/<%= entry.id %>/refund" onsubmit="return confirm('Registrar la reversión íntegra e inmutable de este cobro?')"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn btn-sm btn-outline-warning" type="submit">Revertir cobro</button></form><% } %></td></tr><% }) %>
+        <% if (!transactions.length) { %><tr><td colspan="7" class="text-center text-muted py-3">Sin transacciones.</td></tr><% } %>
+        </tbody></table></div>
+    </section>
+    <% if (canProcessBilling && invoice.status === 'pending' && canVoid) { %><form method="POST" action="/billing/invoices/<%= invoice.id %>/void" class="mb-4"><input type="hidden" name="_csrf" value="<%= csrfToken %>"><button class="btn btn-outline-danger" type="submit">Anular factura pendiente</button><span class="form-text ms-2">Solo si todos los abonos ya fueron revertidos.</span></form><% } %>
+    <p class="small text-muted">Comprobante interno. Impuestos no calculados; su validez fiscal depende de la normativa y configuración local.</p>
+</main>
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

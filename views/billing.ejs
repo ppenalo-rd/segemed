@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Caja y facturación | SIGEMED</title>
+    <link rel="stylesheet" href="/assets/bootstrap/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+<main class="container py-4">
+    <h1 class="h3 mb-4">Caja y facturación</h1>
+    <% if (!canProcessBilling) { %>
+        <div class="alert alert-info" role="status">Acceso de consulta: solo el personal de Admisión/Caja puede registrar o procesar cobros.</div>
+    <% } %>
+    <% if (canProcessBilling) { %>
+    <section class="card mb-4">
+        <div class="card-header fw-bold">Crear borrador de factura</div>
+        <div class="card-body">
+            <form method="POST" action="/billing/invoices" class="row g-3">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="col-md-5"><label class="form-label">Paciente</label><select class="form-select" name="patient_id" required><option value="">Selecciona paciente</option><% patients.forEach((patient) => { %><option value="<%= patient.id %>"><%= patient.first_name %> <%= patient.last_name %><%= patient.dni_document ? ` · ${patient.dni_document}` : '' %></option><% }) %></select></div>
+                <div class="col-md-4"><label class="form-label">Sede</label><select class="form-select" name="branch_id" required><option value="">Selecciona sede</option><% branches.forEach((branch) => { %><option value="<%= branch.id %>"><%= branch.name %></option><% }) %></select></div>
+                <input type="hidden" name="currency" value="<%= baseCurrency %>">
+                <div class="col-md-3"><label class="form-label">Moneda de la factura</label><input class="form-control" value="<%= baseCurrency %>" readonly></div>
+                <div class="col-12"><label class="form-label">Notas</label><input class="form-control" name="notes" maxlength="500"></div>
+                <div class="col-12"><button class="btn btn-success" type="submit">Crear borrador</button></div>
+            </form>
+            <p class="form-text mb-0 mt-2">Los precios del catálogo están en USD. La factura se emitirá en <%= baseCurrency %> usando la tasa vigente al emitir, que quedará guardada como snapshot. Impuestos no calculados (0) hasta definir la normativa aplicable.</p>
+        </div>
+    </section>
+    <% } %>
+    <section class="card">
+        <div class="card-header fw-bold">Facturas recientes</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
+                <thead><tr><th>Número</th><th>Paciente</th><th>Sede</th><th>Fecha</th><th>Total</th><th>Estado</th><th></th></tr></thead>
+                <tbody>
+                <% invoices.forEach((invoice) => { %>
+                    <tr><td><%= invoice.invoice_number || `Borrador #${invoice.id}` %></td><td><%= invoice.first_name %> <%= invoice.last_name %></td><td><%= invoice.branch_name %></td><td><%= invoice.created_at.toLocaleString('es-ES') %></td><td><%= invoice.currency %> <%= invoice.total %></td><td><span class="badge <%= {draft:'bg-secondary', pending:'bg-warning text-dark', paid:'bg-success', void:'bg-danger'}[invoice.status] %>"><%= {draft:'Borrador', pending:'Pendiente', paid:'Pagado', void:'Anulado'}[invoice.status] %></span></td><td><a class="btn btn-sm btn-outline-primary" href="/billing/invoices/<%= invoice.id %>">Abrir</a></td></tr>
+                <% }) %>
+                <% if (!invoices.length) { %><tr><td colspan="7" class="text-center text-muted py-4">No hay facturas registradas.</td></tr><% } %>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

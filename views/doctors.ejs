@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIGEMED C.A. - Directorio y Perfil Médico</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<div class="container my-5">
+    <!-- Cabecera -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="text-primary fw-bold">Personal Médico / Directorio</h2>
+            <p class="text-muted mb-0">SIGEMED C.A. - Gestión de Staff Clínico</p>
+        </div>
+        <a href="/agenda" class="btn btn-secondary shadow-sm">← Ir a la Sala de Espera</a>
+    </div>
+
+    <!-- Formulario de Registro / Edición de Médico -->
+    <div class="card shadow-sm border-0 mb-5">
+        <div class="card-header bg-primary text-white fw-bold">
+            Ficha de Registro del Médico
+        </div>
+        <div class="card-body">
+            <form action="/admin/doctors/save" method="POST">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <input type="hidden" name="id" id="doctor_id">
+
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Código Interno</label>
+                        <input type="text" name="code" class="form-control" placeholder="Ej. V038134198" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label fw-bold">Nombre Completo</label>
+                        <input type="text" name="name" class="form-control" placeholder="Dr. Nombre Apellido" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Tipo de Personal</label>
+                        <select name="personal_type" class="form-select">
+                            <option value="MÉDICO" selected>MÉDICO</option>
+                            <option value="ESPECIALISTA">ESPECIALISTA</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Especialidad Principal</label>
+                        <input type="text" name="main_specialty" class="form-control" placeholder="Ej. MEDICINA INTERNA" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold" for="default_appointment_duration_minutes">Duración predeterminada (min)</label>
+                        <input type="number" id="default_appointment_duration_minutes" name="default_appointment_duration_minutes" class="form-control" value="20" min="5" max="240" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Consultorio</label>
+                        <input type="text" name="office_room" class="form-control" placeholder="Ej. CONSULTORIO 07">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label fw-bold">Título</label>
+                        <input type="text" name="title" class="form-control" placeholder="Ej. DR">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label fw-bold">Nro Cédula</label>
+                        <input type="text" name="dni_document" class="form-control" placeholder="3813419" required>
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Nro Colegio Médico</label>
+                        <input type="text" name="college_number" class="form-control" placeholder="5716">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Nro MSAS</label>
+                        <input type="text" name="msas_number" class="form-control" placeholder="33806">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Teléfono</label>
+                        <input type="text" name="phone" class="form-control" placeholder="04144311316">
+                    </div>
+
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">Correo Electrónico</label>
+                        <input type="email" name="email" class="form-control" placeholder="medico@sigemed.com">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">Dirección</label>
+                        <input type="text" name="address" class="form-control" placeholder="Urb. Las Esmeraldas...">
+                    </div>
+
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">% Convenio Consultas</label>
+                        <input type="number" step="0.01" name="consultation_convenant_pct" class="form-control" value="0.00">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">% Convenio Cirugías</label>
+                        <input type="number" step="0.01" name="surgery_convenant_pct" class="form-control" value="0.00">
+                    </div>
+                </div>
+
+                <div class="mt-4 text-end">
+                    <button type="submit" class="btn btn-success fw-bold px-4 shadow-sm">Aceptar / Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Tabla de Médicos Registrados -->
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-dark text-white fw-bold">
+            Directorio de Médicos Activos
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Código</th>
+                            <th>Nombre</th>
+                            <th>Especialidad</th>
+                            <th>Consultorio</th>
+                            <th>Cédula</th>
+                            <th>Teléfono</th>
+                            <th class="text-center">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% if (doctors && doctors.length > 0) { %>
+                            <% doctors.forEach(doc => { %>
+                                <tr>
+                                    <td><code><%= doc.code %></code></td>
+                                    <td class="fw-bold"><%= doc.name %></td>
+                                    <td><%= doc.main_specialty %></td>
+                                    <td><%= doc.office_room || 'N/A' %></td>
+                                    <td><%= doc.dni_document %></td>
+                                    <td><%= doc.phone || 'N/A' %></td>
+                                    <td class="text-center">
+                                        <!-- Enlace directo integrado hacia la matriz de horarios -->
+                                        <a href="/admin/doctors/<%= doc.id %>/schedules" class="btn btn-sm btn-outline-primary fw-bold">
+                                            📅 Configurar Horario
+                                        </a>
+                                    </td>
+                                </tr>
+                            <% }) %>
+                        <% } else { %>
+                            <tr>
+                                <td colspan="7" class="text-center py-4 text-muted">
+                                    No hay médicos registrados en el sistema.
+                                </td>
+                            </tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

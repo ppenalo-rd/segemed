@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMR - Historia Clínica del Paciente</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* Estilo visual para las pestañas personalizadas */
+        .soap-tab-btn {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            margin-right: 5px;
+            font-weight: bold;
+            color: #0d6efd;
+        }
+        .soap-tab-btn.active-tab {
+            background-color: #0d6efd !important;
+            color: white !important;
+            border-color: #0d6efd !important;
+        }
+        .soap-pane {
+            display: none;
+        }
+        .soap-pane.active-pane {
+            display: block;
+        }
+    </style>
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<div class="container my-5">
+    <!-- Cabecera y Botón de Retorno -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="text-primary fw-bold">Expediente Clínico</h2>
+            <p class="text-muted mb-0">Sistema de Atención Primaria (APS)</p>
+        </div>
+        <a href="/pacientes" class="btn btn-secondary shadow-sm">← Volver al Directorio</a>
+    </div>
+
+    <!-- Tarjeta de Datos del Paciente -->
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-primary text-white fw-bold">
+            Información General del Paciente
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <span class="text-muted d-block">Nombre Completo:</span>
+                    <strong class="fs-5 text-dark"><%= paciente.first_name %> <%= paciente.last_name %></strong>
+                </div>
+                <div class="col-md-3">
+                    <span class="text-muted d-block">Documento (DNI):</span>
+                    <code><%= paciente.dni_document %></code>
+                </div>
+                <div class="col-md-2">
+                    <span class="text-muted d-block">Género:</span>
+                    <span class="badge bg-secondary"><%= paciente.gender || 'N/D' %></span>
+                </div>
+                <div class="col-md-3">
+                    <span class="text-muted d-block">Teléfono:</span>
+                    <span><%= paciente.phone || 'N/A' %></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Botón para abrir el Formulario de Nueva Nota SOAP -->
+    <div class="mb-4">
+        <!-- Al hacer clic para una nueva, limpiamos el formulario para evitar que arrastre IDs viejos -->
+        <button class="btn btn-success shadow-sm fw-bold" data-bs-toggle="modal" data-bs-target="#modalNuevaNotaSoap" onclick="limpiarModal()">
+            + Registrar Nueva Evolución (SOAP)
+        </button>
+        <% if (currentUser.roles.includes('system_admin')) { %>
+            <a class="btn btn-outline-primary ms-2" href="/admin/medications">Administrar catálogo de medicamentos</a>
+        <% } %>
+    </div>
+
+    <!-- Historial Cronológico de Notas SOAP -->
+    <h3 class="text-secondary fw-bold mb-3">Historial de Evoluciones Clínicas</h3>
+    
+    <% if (notas.length > 0) { %>
+        <% notas.forEach((nota, index) => { %>
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                    <span><strong>Evolución #<%= notas.length - index %></strong> - Fecha: <%= new Date(nota.consultation_date).toLocaleString() %></span>
+                    <div>
+                        <% if (nota.diagnoses.length) { nota.diagnoses.forEach((diagnosis) => { %>
+                            <span class="badge bg-info text-dark me-1"><%= diagnosis.type %>: <%= diagnosis.code %></span>
+                        <% }) } else { %>
+                            <span class="badge bg-secondary me-2">Sin CIE-10</span>
+                        <% } %>
+                        
+                        <!-- NUEVO: Botón para Imprimir Historia Completa (SOAP) -->
+                        <a href="/patients/<%= paciente.id %>/full-history/<%= nota.id %>" target="_blank" class="btn btn-sm btn-primary fw-bold shadow-sm me-1">
+                            📄 Historia Médica
+                        </a>
+
+                        <!-- Botón para Completar/Editar la evolución interrumpida -->
+                        <button type="button" class="btn btn-sm btn-warning fw-bold text-dark shadow-sm" onclick="cargarDatosEdicion(this)"
+                            data-id="<%= nota.id %>"
+                            data-subjective="<%= nota.subjective || '' %>"
+                            data-chief-complaint="<%= nota.chief_complaint || nota.subjective || '' %>"
+                            data-current-illness="<%= nota.current_illness || '' %>"
+                            data-relevant-background="<%= nota.relevant_background || '' %>"
+                            data-objective="<%= nota.objective || '' %>"
+                            data-assessment="<%= nota.assessment || '' %>"
+                            data-plan="<%= nota.plan || '' %>"
+                            data-diagnostic-plan="<%= nota.diagnostic_plan || '' %>"
+                            data-therapeutic-plan="<%= nota.therapeutic_plan || '' %>"
+                            data-education="<%= nota.education_recommendations || '' %>"
+                            data-follow-up-date="<%= nota.follow_up_date ? new Date(nota.follow_up_date).toISOString().slice(0, 10) : '' %>"
+                            data-bp="<%= nota.blood_pressure || '' %>"
+                            data-hr="<%= nota.heart_rate || '' %>"
+                            data-temp="<%= nota.temperature || '' %>"
+                            data-weight="<%= nota.weight || '' %>"
+                            data-height="<%= nota.height || '' %>"
+                            data-respiratory-rate="<%= nota.respiratory_rate || '' %>"
+                            data-oxygen-saturation="<%= nota.oxygen_saturation || '' %>"
+                            data-lab-results-summary="<%= nota.lab_results_summary || '' %>"
+                            data-cie10-primary="<%= nota.primary_cie_code || (nota.cie10_code !== 'N/A' ? nota.cie10_code : '') %>"
+                            data-cie10-secondary="<%= nota.secondary_cie_code || '' %>"
+                            data-cie10-tertiary="<%= nota.tertiary_cie_code || '' %>"
+                            data-study-ids="<%= nota.studyOrders.filter(order => ['ordered', 'scheduled', 'in_progress'].includes(order.status)).map(order => order.study_id).join(',') %>">
+                            ✏️ Completar
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-3"><strong>Presión Arterial:</strong> <%= nota.blood_pressure || 'N/A' %></div>
+                        <div class="col-md-3"><strong>F. Cardíaca:</strong> <%= nota.heart_rate ? nota.heart_rate + ' lpm' : 'N/A' %></div>
+                        <div class="col-md-3"><strong>Temperatura:</strong> <%= nota.temperature ? nota.temperature + ' °C' : 'N/A' %></div>
+                        <div class="col-md-3"><strong>IMC:</strong> <%= nota.bmi ? nota.bmi + ' (' + nota.bmi_status + ')' : 'N/A' %></div>
+                    </div>
+                    <hr>
+                    <p><strong>(S) Motivo de consulta:</strong> <%= nota.chief_complaint || nota.subjective || 'Sin registro' %></p>
+                    <% if (nota.current_illness) { %><p><strong>Enfermedad actual:</strong> <%= nota.current_illness %></p><% } %>
+                    <% if (nota.relevant_background) { %><p><strong>Antecedentes relevantes:</strong> <%= nota.relevant_background %></p><% } %>
+                    <p><strong>(O) Objetivo:</strong> <%= nota.objective %></p>
+                    <% if (nota.lab_results_summary) { %><p><strong>Paraclínicos revisados:</strong> <%= nota.lab_results_summary %></p><% } %>
+                    <% if (nota.respiratory_rate || nota.oxygen_saturation) { %>
+                        <p><strong>FR:</strong> <%= nota.respiratory_rate || 'N/D' %> rpm · <strong>SpO₂:</strong> <%= nota.oxygen_saturation || 'N/D' %>%</p>
+                    <% } %>
+                    <p><strong>(A) Análisis:</strong> <%= nota.assessment %></p>
+                    <% if (nota.diagnoses.length) { %>
+                        <ul class="mb-3">
+                            <% nota.diagnoses.forEach((diagnosis) => { %>
+                                <li><strong><%= diagnosis.type %>:</strong> <%= diagnosis.code %> — <%= diagnosis.description || 'Sin descripción' %></li>
+                            <% }) %>
+                        </ul>
+                    <% } %>
+                    <% if (nota.diagnostic_plan) { %><p><strong>Exámenes y paraclínicos:</strong> <%= nota.diagnostic_plan %></p><% } %>
+                    <% if (nota.studyOrders.length) { %>
+                        <div class="mb-3">
+                            <strong>Órdenes de estudios:</strong>
+                            <ul class="mb-0">
+                                <% nota.studyOrders.forEach((order) => { %>
+                                    <li>
+                                        <%= order.name %> (<%= order.category %>) —
+                                        prioridad <%= { routine: 'Rutina', urgent: 'Urgente', stat: 'Inmediata (STAT)' }[order.priority] || order.priority %>,
+                                        estado <%= { ordered: 'Solicitada', scheduled: 'Programada', in_progress: 'En proceso', completed: 'Completada', cancelled: 'Cancelada' }[order.status] || order.status %>
+                                        <% if (order.instructions) { %> · Indicaciones: <%= order.instructions %><% } %>
+                                    </li>
+                                <% }) %>
+                            </ul>
+                        </div>
+                    <% } %>
+                    <section class="border rounded p-3 my-3">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                            <h6 class="fw-bold mb-0">Prescripción electrónica</h6>
+                            <% if (medicationCatalog.length === 0) { %>
+                                <span class="small text-muted">Catálogo local vacío; puedes usar texto libre.</span>
+                            <% } %>
+                        </div>
+                        <% if (nota.prescriptions.length) { %>
+                            <% nota.prescriptions.forEach((prescription) => { %>
+                                <div class="card mb-2">
+                                    <div class="card-body py-2">
+                                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                            <div>
+                                                <strong>Receta #<%= prescription.id %></strong>
+                                                <span class="badge <%= prescription.status === 'active' ? 'bg-success' : prescription.status === 'draft' ? 'bg-warning text-dark' : 'bg-secondary' %>">
+                                                    <%= { draft: 'Borrador', active: 'Activa', cancelled: 'Cancelada', completed: 'Completada' }[prescription.status] || prescription.status %>
+                                                </span>
+                                                <small class="text-muted ms-2">Elaborada por <%= prescription.prescribed_by_name %> · <%= new Date(prescription.created_at).toLocaleString() %></small>
+                                            </div>
+                                            <% if (prescription.status === 'active' && prescription.signed_at) { %>
+                                                <a class="btn btn-sm btn-outline-danger" target="_blank" href="/patients/<%= paciente.id %>/prescriptions/<%= prescription.id %>/pdf">Ver receta PDF</a>
+                                            <% } %>
+                                        </div>
+                                        <ul class="small my-2">
+                                            <% prescription.items.forEach((item) => { %>
+                                                <li>
+                                                    <strong><%= item.medication_name %><%= item.strength ? ` — ${item.strength}` : '' %></strong>:
+                                                    <%= item.dose %><%= item.route ? ` · vía ${item.route}` : '' %> · <%= item.frequency %>
+                                                    <% if (item.duration) { %> · duración: <%= item.duration %><% } %>
+                                                    <% if (item.quantity) { %> · cantidad: <%= item.quantity %><% } %>
+                                                    <% if (item.instructions) { %> · <%= item.instructions %><% } %>
+                                                </li>
+                                            <% }) %>
+                                        </ul>
+                                        <% if (prescription.instructions) { %><p class="small mb-2"><strong>Indicaciones generales:</strong> <%= prescription.instructions %></p><% } %>
+                                        <% if (prescription.status === 'active' && prescription.signed_at) { %>
+                                            <small class="text-muted">Confirmada por <%= prescription.prescribed_by_name %> el <%= new Date(prescription.signed_at).toLocaleString() %>. Registro de confirmación; no representa firma digital certificada.</small>
+                                        <% } else if (prescription.status === 'draft' && currentUser.roles.includes('doctor') && prescription.prescribed_by_user_id === currentUser.id) { %>
+                                            <form class="mt-2" method="POST" action="/patients/<%= paciente.id %>/prescriptions/<%= prescription.id %>/sign">
+                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                                <div class="form-check mb-2">
+                                                    <input class="form-check-input" type="checkbox" name="confirm_prescription" value="on" id="confirmPrescription<%= prescription.id %>" required>
+                                                    <label class="form-check-label small" for="confirmPrescription<%= prescription.id %>">Confirmo que revisé y autorizo esta receta. La activación registrará mi usuario y fecha; no es una firma digital certificada.</label>
+                                                </div>
+                                                <button class="btn btn-sm btn-success" type="submit">Confirmar y activar receta</button>
+                                            </form>
+                                            <form class="mt-2" method="POST" action="/patients/<%= paciente.id %>/prescriptions/<%= prescription.id %>/cancel" onsubmit="return confirm('¿Cancelar este borrador? Quedará registrado y no podrá activarse.');">
+                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                                <button class="btn btn-sm btn-outline-danger" type="submit">Cancelar borrador</button>
+                                            </form>
+                                        <% } %>
+                                    </div>
+                                </div>
+                            <% }) %>
+                        <% } else { %>
+                            <p class="small text-muted">Aún no hay recetas registradas para esta consulta.</p>
+                        <% } %>
+                        <% if (currentUser.roles.includes('doctor')) { %>
+                            <form method="POST" action="/patients/<%= paciente.id %>/consultations/<%= nota.id %>/prescriptions" class="prescription-draft-form mt-3">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <div class="prescription-items">
+                                    <div class="prescription-item border rounded p-3 mb-2">
+                                        <div class="row g-2">
+                                            <div class="col-md-6">
+                                                <label class="form-label">Catálogo local (opcional)</label>
+                                                <select class="form-select medication-catalog-select" name="items[0][medication_id]">
+                                                    <option value="">No catalogado / escribir manualmente</option>
+                                                    <% medicationCatalog.forEach((medication) => { %>
+                                                        <option value="<%= medication.id %>"
+                                                            data-name="<%= medication.name %>"
+                                                            data-strength="<%= medication.strength || '' %>"
+                                                            data-route="<%= medication.route || '' %>">
+                                                            <%= medication.name %><%= medication.strength ? ` — ${medication.strength}` : '' %><%= medication.dosage_form ? ` (${medication.dosage_form})` : '' %>
+                                                        </option>
+                                                    <% }) %>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label class="form-label">Medicamento / nombre genérico o comercial</label>
+                                                <input class="form-control" name="items[0][medication_name]" maxlength="180" required>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Concentración</label>
+                                                <input class="form-control" name="items[0][strength]" maxlength="100">
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Dosis <span class="text-danger">*</span></label>
+                                                <input class="form-control" name="items[0][dose]" maxlength="100" required>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Vía</label>
+                                                <input class="form-control" name="items[0][route]" maxlength="80">
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Frecuencia <span class="text-danger">*</span></label>
+                                                <input class="form-control" name="items[0][frequency]" maxlength="120" required>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Duración</label>
+                                                <input class="form-control" name="items[0][duration]" maxlength="100">
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Cantidad</label>
+                                                <input class="form-control" name="items[0][quantity]" type="number" min="0.01" step="0.01">
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label class="form-label">Indicaciones del medicamento</label>
+                                                <input class="form-control" name="items[0][instructions]" maxlength="1000">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <template class="prescription-item-template">
+                                    <div class="prescription-item border rounded p-3 mb-2">
+                                        <div class="d-flex justify-content-end mb-2">
+                                            <button type="button" class="btn btn-sm btn-outline-danger remove-prescription-item">Quitar medicamento</button>
+                                        </div>
+                                        <div class="row g-2">
+                                            <div class="col-md-6">
+                                                <label class="form-label">Catálogo local (opcional)</label>
+                                                <select class="form-select medication-catalog-select" name="items[__INDEX__][medication_id]">
+                                                    <option value="">No catalogado / escribir manualmente</option>
+                                                    <% medicationCatalog.forEach((medication) => { %>
+                                                        <option value="<%= medication.id %>" data-name="<%= medication.name %>" data-strength="<%= medication.strength || '' %>" data-route="<%= medication.route || '' %>"><%= medication.name %><%= medication.strength ? ` — ${medication.strength}` : '' %><%= medication.dosage_form ? ` (${medication.dosage_form})` : '' %></option>
+                                                    <% }) %>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-6"><label class="form-label">Medicamento / nombre genérico o comercial</label><input class="form-control" name="items[__INDEX__][medication_name]" maxlength="180" required></div>
+                                            <div class="col-md-3"><label class="form-label">Concentración</label><input class="form-control" name="items[__INDEX__][strength]" maxlength="100"></div>
+                                            <div class="col-md-3"><label class="form-label">Dosis <span class="text-danger">*</span></label><input class="form-control" name="items[__INDEX__][dose]" maxlength="100" required></div>
+                                            <div class="col-md-3"><label class="form-label">Vía</label><input class="form-control" name="items[__INDEX__][route]" maxlength="80"></div>
+                                            <div class="col-md-3"><label class="form-label">Frecuencia <span class="text-danger">*</span></label><input class="form-control" name="items[__INDEX__][frequency]" maxlength="120" required></div>
+                                            <div class="col-md-3"><label class="form-label">Duración</label><input class="form-control" name="items[__INDEX__][duration]" maxlength="100"></div>
+                                            <div class="col-md-3"><label class="form-label">Cantidad</label><input class="form-control" name="items[__INDEX__][quantity]" type="number" min="0.01" step="0.01"></div>
+                                            <div class="col-md-6"><label class="form-label">Indicaciones del medicamento</label><input class="form-control" name="items[__INDEX__][instructions]" maxlength="1000"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <button type="button" class="btn btn-sm btn-outline-primary add-prescription-item">+ Agregar medicamento</button>
+                                <div class="mt-3">
+                                    <label class="form-label" for="prescriptionInstructions<%= nota.id %>">Indicaciones generales de la receta</label>
+                                    <textarea class="form-control" id="prescriptionInstructions<%= nota.id %>" name="prescription_instructions" rows="2" maxlength="2000"></textarea>
+                                </div>
+                                <p class="form-text mt-2">Se guardará como borrador. No será una receta activa hasta la confirmación explícita del médico que la creó. Revise los datos clínicos y posología; el sistema no recomienda dosis.</p>
+                                <button class="btn btn-sm btn-outline-success mt-2" type="submit">Guardar borrador de receta</button>
+                            </form>
+                        <% } %>
+                    </section>
+                    <p><strong>(P) Tratamiento e indicaciones:</strong> <%= nota.therapeutic_plan || nota.plan %></p>
+                    <% if (nota.education_recommendations) { %><p><strong>Educación:</strong> <%= nota.education_recommendations %></p><% } %>
+                    <% if (nota.follow_up_date) { %><p class="mb-0"><strong>Seguimiento:</strong> <%= new Date(nota.follow_up_date).toLocaleDateString('es-VE', { timeZone: 'UTC' }) %></p><% } %>
+                </div>
+            </div>
+        <% }) %>
+    <% } else { %>
+        <div class="card shadow-sm border-0 p-4 text-center text-muted">
+            <p class="mb-0">No hay notas SOAP registradas para este paciente todavía.</p>
+        </div>
+    <% } %>
+</div>
+
+<!-- VENTANA MODAL: Formulario de Nueva Nota SOAP con Pestañas Robustas -->
+<div class="modal fade" id="modalNuevaNotaSoap" tabindex="-1" aria-labelledby="modalSoapLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <form action="/patients/<%= paciente.id %>/soap" method="POST" id="formSoap">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                
+                <!-- CAMPO OCULTO: Permite al backend identificar si se está actualizando una consulta existente -->
+                <input type="hidden" id="consultation_id" name="consultation_id" value="">
+
+                <div class="modal-header bg-success text-white">
+                    <h5 class="modal-title fw-bold" id="modalSoapLabel">Nueva Evolución Clínica - Estructura SOAP</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    
+                    <!-- BOTONES DE NAVEGACIÓN (PESTAÑAS) -->
+                    <div class="d-flex flex-wrap mb-4" role="tablist">
+                        <button type="button" class="btn soap-tab-btn active-tab px-3 py-2 rounded" onclick="cambiarTab('subjetivo', event)">1. (S) Subjetivo</button>
+                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('objetivo', event)">2. (O) Objetivo y Signos Vitales</button>
+                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('analisis', event)">3. (A) Análisis y CIE-10</button>
+                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('plan', event)">4. (P) Plan y Tratamiento</button>
+                    </div>
+
+                    <!-- CONTENEDORES DE CADA PASO SOAP -->
+                    
+                    <!-- 1. SUBJETIVO -->
+                    <div id="pane-subjetivo" class="soap-pane active-pane">
+                        <h6 class="text-secondary fw-bold mb-3">Síntomas, enfermedad actual y antecedentes</h6>
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">(S) Motivo y síntomas referidos:</label>
+                                <button type="button" id="btn-dictar-subjective_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('subjective_text')">
+                                    🎤 Dictar
+                                </button>
+                            </div>
+                            <textarea class="form-control" id="subjective_text" name="chief_complaint" rows="3" placeholder="Síntomas y motivo principal de consulta..."></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="currentIllness">Enfermedad actual y evolución</label>
+                            <textarea class="form-control" id="currentIllness" name="current_illness" rows="3" placeholder="Inicio, duración, evolución y factores asociados..."></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="relevantBackground">Antecedentes relevantes</label>
+                            <textarea class="form-control" id="relevantBackground" name="relevant_background" rows="3" placeholder="Antecedentes personales, familiares, medicamentos y alergias pertinentes..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- 2. OBJETIVO -->
+                    <div id="pane-objetivo" class="soap-pane">
+                        <h6 class="text-secondary fw-bold mb-3">Registro de Signos Vitales y Medidas Antropométricas</h6>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3">
+                                <label class="form-label fw-bold">Presión Arterial:</label>
+                                <input type="text" class="form-control" name="blood_pressure" placeholder="Ej: 120/80">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-bold">Frecuencia Cardíaca (lpm):</label>
+                                <input type="number" class="form-control" name="heart_rate" placeholder="Ej: 75">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-bold">Temperatura (°C):</label>
+                                <input type="number" step="0.01" class="form-control" name="temperature" placeholder="Ej: 36.5">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label fw-bold">Peso (kg):</label>
+                                <input type="number" step="0.01" class="form-control" name="weight" placeholder="Ej: 70.5">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label fw-bold">Talla (m):</label>
+                                <input type="number" step="0.01" class="form-control" name="height" placeholder="Ej: 1.75">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-bold">Frecuencia respiratoria (rpm):</label>
+                                <input type="number" min="1" class="form-control" name="respiratory_rate">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-bold">Saturación de oxígeno (%):</label>
+                                <input type="number" min="0" max="100" class="form-control" name="oxygen_saturation">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">Descripción Física / Examen Físico Adicional:</label>
+                                <button type="button" id="btn-dictar-objective_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('objective_text')">
+                                    🎤 Dictar
+                                </button>
+                            </div>
+                            <textarea class="form-control" id="objective_text" name="objective" rows="4" placeholder="Hallazgos al examen físico..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- 3. ANÁLISIS -->
+                    <div id="pane-analisis" class="soap-pane">
+                        <h6 class="text-secondary fw-bold mb-3">Razonamiento Clínico y Codificación CIE-10</h6>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="labResultsSummary">Resultados de laboratorio y paraclínicos considerados</label>
+                            <textarea class="form-control" id="labResultsSummary" name="lab_results_summary" rows="3" placeholder="Resumen de resultados revisados para el análisis clínico..."></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">(A) Análisis / Juicio Clínico:</label>
+                                <button type="button" id="btn-dictar-assessment_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('assessment_text')">
+                                    🎤 Dictar
+                                </button>
+                            </div>
+                            <textarea class="form-control" id="assessment_text" name="assessment" rows="3" placeholder="Razonamiento clínico y diagnósticos presuntivos..."></textarea>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold" for="cie10Primary">(A) Diagnóstico principal CIE-10:</label>
+                                <input type="search" class="form-control cie10-code" id="cie10Primary" name="cie10_primary_code" list="cie10Options" autocomplete="off" placeholder="Buscar por código o término">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold" for="cie10Secondary">Diagnóstico secundario CIE-10:</label>
+                                <input type="search" class="form-control cie10-code" id="cie10Secondary" name="cie10_secondary_code" list="cie10Options" autocomplete="off">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold" for="cie10Tertiary">Diagnóstico tercero CIE-10:</label>
+                                <input type="search" class="form-control cie10-code" id="cie10Tertiary" name="cie10_tertiary_code" list="cie10Options" autocomplete="off">
+                            </div>
+                            <div class="col-12 form-text">Busca por código o descripción; el código se valida contra el catálogo CIE-10 al guardar.</div>
+                        </div>
+                        <datalist id="cie10Options"></datalist>
+                    </div>
+
+                    <!-- 4. PLAN -->
+                    <div id="pane-plan" class="soap-pane">
+                        <h6 class="text-secondary fw-bold mb-3">Plan Médico, Indicaciones y Prescripción</h6>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="diagnosticPlan">Exámenes de laboratorio, estudios y paraclínicos</label>
+                            <textarea class="form-control" id="diagnosticPlan" name="diagnostic_plan" rows="3" placeholder="Anota los exámenes solicitados e instrucciones relevantes..."></textarea>
+                            <div class="form-text">Conserva aquí el resumen narrativo del plan diagnóstico. Las órdenes estructuradas se registran por separado.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Órdenes estructuradas de estudios</label>
+                            <div class="border rounded p-3">
+                                <% if (studyCatalog.length) { %>
+                                    <div class="row g-2">
+                                        <% studyCatalog.forEach((study) => { %>
+                                            <div class="col-md-6 col-lg-4">
+                                                <label class="form-check">
+                                                    <input class="form-check-input study-order-option" type="checkbox" name="study_ids" value="<%= study.id %>">
+                                                    <span class="form-check-label"><strong><%= study.name %></strong><br><small class="text-muted"><%= study.category %> · <%= study.code || 'Sin código' %></small></span>
+                                                </label>
+                                            </div>
+                                        <% }) %>
+                                    </div>
+                                    <div class="form-text mt-2">Al editar, las órdenes activas aparecen marcadas. Guardar no cancela ni modifica órdenes ya emitidas; solo agrega las que aún no estén activas.</div>
+                                <% } else { %>
+                                    <p class="text-muted mb-0">No hay estudios activos en el catálogo. Solicita que se cargue o habilite el catálogo antes de emitir órdenes.</p>
+                                <% } %>
+                            </div>
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold" for="studyPriority">Prioridad para nuevas órdenes</label>
+                                <select class="form-select" id="studyPriority" name="study_priority">
+                                    <option value="routine">Rutina</option>
+                                    <option value="urgent">Urgente</option>
+                                    <option value="stat">Inmediata (STAT)</option>
+                                </select>
+                            </div>
+                            <div class="col-md-8">
+                                <label class="form-label fw-bold" for="studyInstructions">Indicaciones para nuevas órdenes</label>
+                                <textarea class="form-control" id="studyInstructions" name="study_instructions" rows="2" maxlength="1000" placeholder="Preparación o indicaciones relevantes para los estudios seleccionados"></textarea>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">(P) Tratamiento e indicaciones:</label>
+                                <button type="button" id="btn-dictar-plan_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('plan_text')">
+                                    🎤 Dictar
+                                </button>
+                            </div>
+                            <textarea class="form-control" id="plan_text" name="plan" rows="6" placeholder="Medicación recetada, exámenes complementarios solicitados, indicaciones y reposo..."></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="educationRecommendations">Educación y recomendaciones al paciente</label>
+                            <textarea class="form-control" id="educationRecommendations" name="education_recommendations" rows="3"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="followUpDate">Fecha de seguimiento sugerida</label>
+                            <input type="date" class="form-control" id="followUpDate" name="follow_up_date">
+                        </div>
+                    </div>
+
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-success fw-bold">Guardar / Actualizar Evolución</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Bootstrap 5 JS Bundle y Scripts de Control -->
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script>
+    // Cambio de Pestañas
+    function cambiarTab(nombreTab, evento) {
+        evento.preventDefault();
+        document.querySelectorAll('.soap-pane').forEach(pane => pane.classList.remove('active-pane'));
+        document.querySelectorAll('.soap-tab-btn').forEach(btn => btn.classList.remove('active-tab'));
+        document.getElementById('pane-' + nombreTab).classList.add('active-pane');
+        evento.currentTarget.classList.add('active-tab');
+    }
+
+    // Limpiar modal al registrar nueva evolución
+    function limpiarModal() {
+        document.getElementById('formSoap').reset();
+        document.getElementById('consultation_id').value = '';
+        document.getElementById('modalSoapLabel').innerText = 'Nueva Evolución Clínica - Estructura SOAP';
+        document.querySelectorAll('.soap-pane').forEach((pane) => pane.classList.remove('active-pane'));
+        document.getElementById('pane-subjetivo').classList.add('active-pane');
+        document.querySelectorAll('.soap-tab-btn').forEach((button, index) => button.classList.toggle('active-tab', index === 0));
+    }
+
+    // Cargar datos en el modal para editar evolución interrumpida
+    function cargarDatosEdicion(btn) {
+        document.getElementById('consultation_id').value = btn.getAttribute('data-id');
+        
+        // Asignación de Textareas
+        document.getElementById('subjective_text').value = _cleanNull(btn.getAttribute('data-chief-complaint'), 'Sin registro');
+        document.getElementById('currentIllness').value = _cleanNull(btn.getAttribute('data-current-illness'));
+        document.getElementById('relevantBackground').value = _cleanNull(btn.getAttribute('data-relevant-background'));
+        document.getElementById('objective_text').value = _cleanNull(btn.getAttribute('data-objective'));
+        document.getElementById('labResultsSummary').value = _cleanNull(btn.getAttribute('data-lab-results-summary'));
+        document.getElementById('assessment_text').value = _cleanNull(btn.getAttribute('data-assessment'), 'Sin análisis');
+        document.getElementById('plan_text').value = _cleanNull(btn.getAttribute('data-therapeutic-plan') || btn.getAttribute('data-plan'), 'Sin indicaciones');
+        document.getElementById('diagnosticPlan').value = _cleanNull(btn.getAttribute('data-diagnostic-plan'));
+        document.getElementById('educationRecommendations').value = _cleanNull(btn.getAttribute('data-education'));
+        document.getElementById('followUpDate').value = _cleanNull(btn.getAttribute('data-follow-up-date'));
+        
+        // Asignación de Inputs
+        document.querySelector('[name="blood_pressure"]').value = _cleanNull(btn.getAttribute('data-bp'));
+        document.querySelector('[name="heart_rate"]').value = _cleanNull(btn.getAttribute('data-hr'));
+        document.querySelector('[name="temperature"]').value = _cleanNull(btn.getAttribute('data-temp'));
+        document.querySelector('[name="weight"]').value = _cleanNull(btn.getAttribute('data-weight'));
+        document.querySelector('[name="height"]').value = _cleanNull(btn.getAttribute('data-height'));
+        document.querySelector('[name="respiratory_rate"]').value = _cleanNull(btn.getAttribute('data-respiratory-rate'));
+        document.querySelector('[name="oxygen_saturation"]').value = _cleanNull(btn.getAttribute('data-oxygen-saturation'));
+        document.querySelector('[name="cie10_primary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-primary'));
+        document.querySelector('[name="cie10_secondary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-secondary'));
+        document.querySelector('[name="cie10_tertiary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-tertiary'));
+        const activeStudyIds = new Set((btn.getAttribute('data-study-ids') || '').split(',').filter(Boolean));
+        document.querySelectorAll('.study-order-option').forEach((checkbox) => {
+            checkbox.checked = activeStudyIds.has(checkbox.value);
+        });
+        document.getElementById('studyPriority').value = 'routine';
+        document.getElementById('studyInstructions').value = '';
+
+        document.getElementById('modalSoapLabel').innerText = 'Completar Evolución Clínica (Edición)';
+        
+        var modal = new bootstrap.Modal(document.getElementById('modalNuevaNotaSoap'));
+        modal.show();
+    }
+
+    // Función auxiliar para evitar imprimir la palabra "null"
+    function _cleanNull(val, defaultText = '') {
+        return (val && val !== 'null' && val !== defaultText) ? val : '';
+    }
+
+    document.querySelectorAll('.prescription-draft-form').forEach((form) => {
+        let nextIndex = 1;
+        form.querySelector('.add-prescription-item').addEventListener('click', () => {
+            const template = form.querySelector('.prescription-item-template');
+            const item = template.content.firstElementChild.cloneNode(true);
+            item.querySelectorAll('[name]').forEach((field) => {
+                field.name = field.name.replaceAll('__INDEX__', String(nextIndex));
+            });
+            nextIndex += 1;
+            form.querySelector('.prescription-items').append(item);
+        });
+        form.addEventListener('click', (event) => {
+            const removeButton = event.target.closest('.remove-prescription-item');
+            if (removeButton) removeButton.closest('.prescription-item').remove();
+        });
+        form.addEventListener('change', (event) => {
+            const select = event.target.closest('.medication-catalog-select');
+            if (!select || !select.value) return;
+            const row = select.closest('.prescription-item');
+            const option = select.selectedOptions[0];
+            row.querySelector('[name$="[medication_name]"]').value = option.dataset.name || '';
+            row.querySelector('[name$="[strength]"]').value = option.dataset.strength || '';
+            row.querySelector('[name$="[route]"]').value = option.dataset.route || '';
+        });
+    });
+
+    document.querySelectorAll('.cie10-code').forEach((input) => {
+        let request;
+        input.addEventListener('input', async () => {
+            const query = input.value.trim();
+            const options = document.getElementById('cie10Options');
+            if (query.length < 2) {
+                options.replaceChildren();
+                return;
+            }
+            if (request) request.abort();
+            request = new AbortController();
+            try {
+                const response = await fetch(`/api/cie10/search?q=${encodeURIComponent(query)}`, {
+                    headers: { Accept: 'application/json' },
+                    signal: request.signal,
+                });
+                if (!response.ok) throw new Error('No se pudo buscar en el catálogo CIE-10.');
+                const diagnoses = await response.json();
+                options.replaceChildren(...diagnoses.map((diagnosis) => {
+                    const option = document.createElement('option');
+                    option.value = diagnosis.code;
+                    option.label = diagnosis.description;
+                    return option;
+                }));
+            } catch (error) {
+                if (error.name !== 'AbortError') console.error(error);
+            }
+        });
+    });
+</script>
+
+<!-- Script para Dictado por Voz (Web Speech API) -->
+<script>
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.lang = 'es-ES'; 
+        recognition.interimResults = false;
+
+        let currentTextArea = null;
+
+        function iniciarDictado(textAreaId) {
+            currentTextArea = document.getElementById(textAreaId);
+            recognition.start();
+            const btn = document.getElementById('btn-dictar-' + textAreaId);
+            btn.innerHTML = '🔴 Escuchando...';
+            btn.classList.replace('btn-outline-secondary', 'btn-danger');
+        }
+
+        recognition.onresult = function(event) {
+            const transcript = event.results[0][0].transcript;
+            if (currentTextArea.value.length > 0) {
+                currentTextArea.value += ' ' + transcript + '.';
+            } else {
+                currentTextArea.value = transcript.charAt(0).toUpperCase() + transcript.slice(1) + '.';
+            }
+        };
+
+        recognition.onspeechend = function() { recognition.stop(); };
+
+        recognition.onend = function() {
+            if(currentTextArea) {
+                const btn = document.getElementById('btn-dictar-' + currentTextArea.id);
+                btn.innerHTML = '🎤 Dictar';
+                btn.classList.replace('btn-danger', 'btn-outline-secondary');
+            }
+        };
+
+        recognition.onerror = function(event) {
+            console.error('Error de reconocimiento de voz:', event.error);
+            alert('Error al acceder al micrófono. Por favor, verifique los permisos de su navegador.');
+        };
+    } else {
+        console.warn('El dictado por voz no es soportado en este navegador. Se recomienda usar Google Chrome.');
+    }
+</script>
+
+</body>
+</html>

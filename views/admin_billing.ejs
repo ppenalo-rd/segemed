@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Configuración de facturación | SIGEMED</title>
+    <link rel="stylesheet" href="/assets/bootstrap/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+<main class="container py-4">
+    <h1 class="h3 mb-4">Configuración de facturación</h1>
+    <% if (error === 'duplicate_currency') { %><div class="alert alert-warning">El código de moneda ya está registrado.</div><% } %>
+    <% if (error === 'duplicate_rate') { %><div class="alert alert-warning">Ya existe una tasa para esa moneda y fecha efectiva.</div><% } %>
+    <% if (error === 'duplicate_service') { %><div class="alert alert-warning">El código del servicio ya está registrado.</div><% } %>
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <section class="card mb-4">
+                <div class="card-header fw-bold">Monedas habilitadas</div>
+                <div class="card-body">
+                    <p class="small text-muted">Moneda base del sistema: <strong><%= baseCurrency %></strong>. Los precios del catálogo se mantienen en USD.</p>
+                    <form method="POST" action="/admin/billing/currencies" class="row g-2">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <div class="col-4"><label class="form-label">Código ISO</label><input class="form-control" name="code" maxlength="3" pattern="[A-Za-z]{3}" required></div>
+                        <div class="col-8"><label class="form-label">Nombre</label><input class="form-control" name="name" maxlength="80" required></div>
+                        <div class="col-12"><button class="btn btn-primary" type="submit">Agregar moneda</button></div>
+                    </form>
+                    <p class="form-text">USD y VES ya están habilitadas. No es necesario volver a agregarlas.</p>
+                    <ul class="list-group list-group-flush mt-3">
+                    <% currencies.forEach((currency) => { %>
+                        <li class="list-group-item d-flex justify-content-between"><span><%= currency.code %> — <%= currency.name %><%= currency.code === baseCurrency ? ' · Base' : '' %></span><span class="badge <%= currency.active ? 'bg-success' : 'bg-secondary' %>"><%= currency.active ? 'Activa' : 'Inactiva' %></span></li>
+                    <% }) %>
+                    </ul>
+                </div>
+            </section>
+            <section class="card">
+                <div class="card-header fw-bold">Registrar tasa manual</div>
+                <div class="card-body">
+                    <p class="small text-muted">Indica cuántas unidades de la moneda seleccionada equivalen a 1 USD. Para Venezuela, registra la tasa BCV en VES por USD (por ejemplo, 876.7976). Usa punto decimal, sin separador de miles. Los comprobantes guardan una copia inmutable de la tasa usada.</p>
+                    <form method="POST" action="/admin/billing/exchange-rates" class="row g-2">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <div class="col-5"><label class="form-label">Moneda</label><select class="form-select" name="currency_code" required><% currencies.filter((currency) => currency.code !== 'USD' && currency.active).forEach((currency) => { %><option value="<%= currency.code %>"><%= currency.code %></option><% }) %></select></div>
+                        <div class="col-7"><label class="form-label">Unidades por 1 USD</label><input class="form-control" name="units_per_usd" inputmode="decimal" pattern="(?:0|[1-9][0-9]{0,9})(?:\.[0-9]{1,8})?" title="Usa punto decimal y hasta ocho decimales." placeholder="876.79760000" required></div>
+                        <div class="col-12"><label class="form-label">Vigente desde</label><input class="form-control" type="datetime-local" name="effective_at" required></div>
+                        <div class="col-12"><label class="form-label">Origen / referencia</label><input class="form-control" name="source" maxlength="160" required></div>
+                        <div class="col-12"><button class="btn btn-primary" type="submit">Guardar tasa</button></div>
+                    </form>
+                    <h2 class="h6 mt-4">Tasas vigentes</h2>
+                    <ul class="list-group list-group-flush">
+                    <% rates.forEach((rate) => { %><li class="list-group-item"><strong><%= rate.currency_code %></strong>: <%= rate.units_per_usd %> por USD — <%= rate.source %></li><% }) %>
+                    </ul>
+                </div>
+            </section>
+        </div>
+        <div class="col-lg-8">
+            <section class="card mb-4">
+                <div class="card-header fw-bold">Agregar servicio al catálogo</div>
+                <div class="card-body">
+                    <form method="POST" action="/admin/billing/services" class="row g-2">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <div class="col-md-3"><label class="form-label">Código</label><input class="form-control" name="code" maxlength="60"></div>
+                        <div class="col-md-5"><label class="form-label">Nombre</label><input class="form-control" name="name" maxlength="180" required></div>
+                        <div class="col-md-4"><label class="form-label">Tipo</label><select class="form-select" name="service_type" required><option value="consultation">Consulta</option><option value="procedure">Procedimiento</option><option value="study">Estudio</option></select></div>
+                        <div class="col-md-9"><label class="form-label">Descripción</label><input class="form-control" name="description" maxlength="500"></div>
+                        <div class="col-md-3 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Crear servicio</button></div>
+                    </form>
+                    <p class="form-text mb-0 mt-2">Los servicios se crean una vez; luego cada sede define y mantiene su propio precio en USD.</p>
+                </div>
+            </section>
+            <section class="card">
+                <div class="card-header fw-bold">Servicios y precios independientes por sede (USD)</div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped align-middle mb-0">
+                        <thead><tr><th>Servicio</th><th>Sede</th><th>Precio USD</th><th>Precio activo</th><th>Servicio activo</th><th></th></tr></thead>
+                        <tbody>
+                        <% services.forEach((service) => { %>
+                            <tr>
+                                <td><strong><%= service.name %></strong><br><small><%= {consultation:'Consulta', procedure:'Procedimiento', study:'Estudio'}[service.service_type] %><%= service.code ? ` · ${service.code}` : '' %></small></td>
+                                <td><%= service.branch_name %></td>
+                                <td>
+                                    <form id="price-<%= service.id %>-<%= service.branch_id %>" method="POST" action="/admin/billing/services/<%= service.id %>/prices/<%= service.branch_id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"></form>
+                                    <input form="price-<%= service.id %>-<%= service.branch_id %>" class="form-control form-control-sm" name="price_usd" type="number" min="0" step="0.01" value="<%= service.price_usd ?? '' %>" required>
+                                </td>
+                                <td><input form="price-<%= service.id %>-<%= service.branch_id %>" class="form-check-input" type="checkbox" name="active" value="true" <%= service.price_active ? 'checked' : '' %>></td>
+                                <td>
+                                    <form id="service-<%= service.id %>-<%= service.branch_id %>" method="POST" action="/admin/billing/services/<%= service.id %>"><input type="hidden" name="_csrf" value="<%= csrfToken %>"></form>
+                                    <select form="service-<%= service.id %>-<%= service.branch_id %>" class="form-select form-select-sm" name="active"><option value="true" <%= service.service_active ? 'selected' : '' %>>Activo</option><option value="false" <%= service.service_active ? '' : 'selected' %>>Inactivo</option></select>
+                                </td>
+                                <td><button form="price-<%= service.id %>-<%= service.branch_id %>" class="btn btn-sm btn-outline-primary" type="submit">Guardar precio</button><button form="service-<%= service.id %>-<%= service.branch_id %>" class="btn btn-sm btn-outline-secondary mt-1" type="submit">Guardar servicio</button></td>
+                            </tr>
+                        <% }) %>
+                        <% if (!services.length) { %><tr><td colspan="6" class="text-center text-muted py-4">Agrega un servicio para configurar sus precios por sede.</td></tr><% } %>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </div>
+</main>
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

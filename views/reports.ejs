@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reportes operativos | SIGEMED</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <%- include('partials/navigation') %>
+    <main class="container-fluid px-lg-4 py-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">Reportería y dashboard operativo</h1>
+                <p class="text-muted mb-0">Indicadores agregados sin identificación de pacientes.</p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-outline-primary" href="/reports/export/clinical/csv?from=<%= filters.from %>&amp;to=<%= filters.to %><%= filters.branchId ? `&amp;branch_id=${filters.branchId}` : '' %>">Clínico CSV</a>
+                <a class="btn btn-outline-primary" href="/reports/export/clinical/pdf?from=<%= filters.from %>&amp;to=<%= filters.to %><%= filters.branchId ? `&amp;branch_id=${filters.branchId}` : '' %>">Clínico PDF</a>
+                <% if (report.financialVisible) { %>
+                    <a class="btn btn-outline-success" href="/reports/export/financial/csv?from=<%= filters.from %>&amp;to=<%= filters.to %><%= filters.branchId ? `&amp;branch_id=${filters.branchId}` : '' %>">Financiero CSV</a>
+                    <a class="btn btn-outline-success" href="/reports/export/financial/pdf?from=<%= filters.from %>&amp;to=<%= filters.to %><%= filters.branchId ? `&amp;branch_id=${filters.branchId}` : '' %>">Financiero PDF</a>
+                <% } %>
+            </div>
+        </div>
+
+        <form class="card card-body mb-4" method="GET" action="/reports">
+            <div class="row g-3 align-items-end">
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label" for="from">Desde</label>
+                    <input class="form-control" id="from" name="from" type="date" value="<%= filters.from %>" required>
+                </div>
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label" for="to">Hasta</label>
+                    <input class="form-control" id="to" name="to" type="date" value="<%= filters.to %>" required>
+                </div>
+                <div class="col-sm-8 col-lg-4">
+                    <label class="form-label" for="branch_id">Sede</label>
+                    <select class="form-select" id="branch_id" name="branch_id">
+                        <option value="">Todas las sedes</option>
+                        <% for (const branch of report.branches) { %>
+                            <option value="<%= branch.id %>" <%= filters.branchId === branch.id ? 'selected' : '' %>><%= branch.name %></option>
+                        <% } %>
+                    </select>
+                </div>
+                <div class="col-sm-4 col-lg-2">
+                    <button class="btn btn-primary w-100" type="submit">Aplicar filtros</button>
+                </div>
+            </div>
+            <div class="small text-muted mt-2">
+                Periodo máximo: 366 días. Vistas analíticas actualizadas:
+                <%= report.refreshedAt ? new Date(report.refreshedAt).toLocaleString('es-VE') : 'pendiente de actualización' %>.
+            </div>
+        </form>
+
+        <section class="row g-3 mb-4" aria-label="Resumen de demanda clínica">
+            <% for (const [label, value] of [
+                ['Citas', report.totals.appointments],
+                ['Atendidas', report.totals.attended_appointments],
+                ['Consultas', report.totals.consultations],
+                ['Órdenes de estudio', report.totals.study_orders],
+                ['Procedimientos', report.totals.procedures],
+                ['Ocupación de agenda', report.totals.occupancy_pct === null ? 'Sin capacidad' : `${report.totals.occupancy_pct}%`],
+            ]) { %>
+                <div class="col-6 col-md-4 col-xl-2">
+                    <div class="card h-100"><div class="card-body">
+                        <div class="small text-muted"><%= label %></div>
+                        <div class="fs-4 fw-semibold"><%= value %></div>
+                    </div></div>
+                </div>
+            <% } %>
+        </section>
+
+        <section class="card mb-4">
+            <div class="card-header fw-semibold">Consultas por sede y especialidad</div>
+            <div class="table-responsive">
+                <table class="table table-striped mb-0">
+                    <thead><tr><th>Sede</th><th>Especialidad</th><th class="text-end">Consultas</th></tr></thead>
+                    <tbody>
+                        <% if (report.specialty.length) { %>
+                            <% for (const row of report.specialty) { %>
+                                <tr><td><%= row.branch_name %></td><td><%= row.specialty %></td><td class="text-end"><%= row.consultations %></td></tr>
+                            <% } %>
+                        <% } else { %>
+                            <tr><td colspan="3" class="text-center text-muted py-3">Sin datos para el periodo.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card mb-4">
+            <div class="card-header fw-semibold">Ocupación de agenda por sede</div>
+            <div class="table-responsive">
+                <table class="table table-striped mb-0">
+                    <thead><tr><th>Sede</th><th class="text-end">Citas reservadas</th><th class="text-end">Capacidad configurada</th><th class="text-end">Ocupación</th></tr></thead>
+                    <tbody>
+                        <% if (report.occupancy.length) { %>
+                            <% for (const row of report.occupancy) { %>
+                                <tr><td><%= row.branch_name %></td><td class="text-end"><%= row.booked %></td><td class="text-end"><%= row.capacity %></td><td class="text-end"><%= row.occupancy_pct === null ? 'Sin capacidad' : `${row.occupancy_pct}%` %></td></tr>
+                            <% } %>
+                        <% } else { %>
+                            <tr><td colspan="4" class="text-center text-muted py-3">Sin horarios configurados o citas para el periodo.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card mb-4">
+            <div class="card-header fw-semibold">Actividad clínica diaria por sede</div>
+            <div class="table-responsive">
+                <table class="table table-striped table-sm mb-0">
+                    <thead><tr><th>Fecha</th><th>Sede</th><th class="text-end">Citas</th><th class="text-end">Atendidas</th><th class="text-end">Canceladas</th><th class="text-end">Consultas</th><th class="text-end">Estudios</th><th class="text-end">Procedimientos</th></tr></thead>
+                    <tbody>
+                        <% if (report.clinical.length) { %>
+                            <% for (const row of report.clinical) { %>
+                                <tr><td><%= row.report_date %></td><td><%= row.branch_name %></td><td class="text-end"><%= row.appointments %></td><td class="text-end"><%= row.attended_appointments %></td><td class="text-end"><%= row.cancelled_appointments %></td><td class="text-end"><%= row.consultations %></td><td class="text-end"><%= row.study_orders %></td><td class="text-end"><%= row.procedures %></td></tr>
+                            <% } %>
+                        <% } else { %>
+                            <tr><td colspan="8" class="text-center text-muted py-3">Sin datos para el periodo.</td></tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <% if (report.financialVisible) { %>
+            <section class="row g-3 mb-4" aria-label="Resumen financiero">
+                <% for (const [label, value] of [
+                    ['Facturado neto (USD)', report.financialTotals.invoiced_usd],
+                    ['Recaudación neta (USD)', report.financialTotals.collected_net_usd],
+                    ['Facturas emitidas', report.financialTotals.invoices_issued],
+                    ['Facturas anuladas', report.financialTotals.invoices_voided],
+                ]) { %>
+                    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body">
+                        <div class="small text-muted"><%= label %></div>
+                        <div class="fs-4 fw-semibold"><%= typeof value === 'number' && label.includes('(USD)') ? value.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value %></div>
+                    </div></div></div>
+                <% } %>
+            </section>
+            <section class="card mb-4">
+                <div class="card-header fw-semibold">Facturación y cobros diarios (USD)</div>
+                <div class="table-responsive">
+                    <table class="table table-striped table-sm mb-0">
+                        <thead><tr><th>Fecha</th><th>Sede</th><th class="text-end">Facturas</th><th class="text-end">Facturado</th><th class="text-end">Cobros</th><th class="text-end">Reembolsos</th><th class="text-end">Neto cobrado</th></tr></thead>
+                        <tbody>
+                            <% if (report.financial.length) { %>
+                                <% for (const row of report.financial) { %>
+                                    <tr><td><%= row.report_date %></td><td><%= row.branch_name %></td><td class="text-end"><%= row.invoices_issued %></td><td class="text-end"><%= row.invoiced_usd.toFixed(2) %></td><td class="text-end"><%= row.payments_usd.toFixed(2) %></td><td class="text-end"><%= row.refunds_usd.toFixed(2) %></td><td class="text-end"><%= row.collected_net_usd.toFixed(2) %></td></tr>
+                                <% } %>
+                            <% } else { %>
+                                <tr><td colspan="7" class="text-center text-muted py-3">Sin datos financieros para el periodo.</td></tr>
+                            <% } %>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        <% } %>
+    </main>
+</body>
+</html>

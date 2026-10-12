@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIGEMED C.A. - Gestión de Horarios Médicos</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<div class="container my-5">
+    <!-- Cabecera de la Pantalla -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h3 class="text-primary fw-bold">Personal Médico / Horarios Multi-Sede</h3>
+            <p class="text-muted mb-0">Médico: <span class="fw-bold text-dark"><%= doctor.name %></span> | Especialidad: <span class="fw-bold text-dark"><%= doctor.main_specialty %></span></p>
+        </div>
+        <div>
+            <a href="/admin/doctors" class="btn btn-secondary shadow-sm">← Volver al Directorio</a>
+        </div>
+    </div>
+
+    <!-- Formulario de Horarios Semanales Integrados -->
+    <form action="/admin/doctors/<%= doctor.id %>/schedules" method="POST">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <div class="card shadow-sm border-0 mb-4">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <span class="fw-bold">Matriz de Turnos Semanales y Sucursales</span>
+                <div>
+                    <button type="submit" class="btn btn-success btn-sm fw-bold px-3">ACEPTAR / GUARDAR</button>
+                    <button type="submit" class="btn btn-warning btn-sm fw-bold px-3 ms-2 text-dark">🔄 Actualizar Registro</button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-bordered mb-0 align-middle text-center">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 11%;">Día</th>
+                                <th style="width: 12%;">Turno</th>
+                                <th style="width: 18%;">Sucursal / Sede</th>
+                                <th style="width: 8%;">Activo</th>
+                                <th style="width: 15%;">Desde</th>
+                                <th style="width: 15%;">Hasta</th>
+                                <th style="width: 10%;">Límite (Cupos)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <% 
+                            const days = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'];
+                            days.forEach((day, index) => { 
+                                // Buscar registros guardados para este día (mañana y tarde)
+                                const savedM = schedules ? schedules.find(s => s.day_of_week === day && s.morning_enabled) : null;
+                                const savedA = schedules ? schedules.find(s => s.day_of_week === day && s.afternoon_enabled) : null;
+
+                                const mEnabled = savedM ? true : false;
+                                const mBranch = savedM ? savedM.branch_id : (typeof branches !== 'undefined' && branches.length > 0 ? branches[0].id : 1);
+                                const mStart = savedM && savedM.morning_start_time ? savedM.morning_start_time.substring(0,5) : '08:00';
+                                const mEnd = savedM && savedM.morning_end_time ? savedM.morning_end_time.substring(0,5) : '12:00';
+                                const mLimit = savedM ? savedM.morning_limit : 10;
+
+                                const aEnabled = savedA ? true : false;
+                                const aBranch = savedA ? savedA.branch_id : (typeof branches !== 'undefined' && branches.length > 0 ? branches[0].id : 1);
+                                const aStart = savedA && savedA.afternoon_start_time ? savedA.afternoon_start_time.substring(0,5) : '13:00';
+                                const aEnd = savedA && savedA.afternoon_end_time ? savedA.afternoon_end_time.substring(0,5) : '17:00';
+                                const aLimit = savedA ? savedA.afternoon_limit : 10;
+                            %>
+                                <!-- Turno Mañana con Franja Condicional Activa -->
+                                <tr class="<%= mEnabled ? 'table-success bg-opacity-10' : '' %>">
+                                    <td rowspan="2" class="fw-bold bg-white align-middle text-start ps-3"><%= day %></td>
+                                    <td class="text-start ps-2 fw-bold text-secondary">MAÑANA</td>
+                                    <td>
+                                        <select name="schedules[<%= index * 2 %>][branch_id]" class="form-select form-select-sm border-primary">
+                                            <% if (typeof branches !== 'undefined' && branches.length > 0) { %>
+                                                <% branches.forEach(b => { %>
+                                                    <option value="<%= b.id %>" <%= b.id === mBranch ? 'selected' : '' %>><%= b.name %></option>
+                                                <% }) %>
+                                            <% } else { %>
+                                                <option value="1">Sucursal Principal</option>
+                                            <% } %>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <div class="form-check form-switch d-inline-block">
+                                            <input class="form-check-input" type="checkbox" name="schedules[<%= index * 2 %>][morning_enabled]" <%= mEnabled ? 'checked' : '' %>>
+                                        </div>
+                                    </td>
+                                    <input type="hidden" name="schedules[<%= index * 2 %>][day_of_week]" value="<%= day %>">
+                                    <td><input type="time" name="schedules[<%= index * 2 %>][morning_start]" class="form-control form-control-sm" value="<%= mStart %>"></td>
+                                    <td><input type="time" name="schedules[<%= index * 2 %>][morning_end]" class="form-control form-control-sm" value="<%= mEnd %>"></td>
+                                    <td><input type="number" name="schedules[<%= index * 2 %>][morning_limit]" class="form-control form-control-sm text-center" value="<%= mLimit %>" min="1" max="50"></td>
+                                </tr>
+
+                                <!-- Turno Tarde con Franja Condicional Activa -->
+                                <tr class="<%= aEnabled ? 'table-success bg-opacity-10' : '' %>">
+                                    <td class="text-start ps-2 fw-bold text-secondary">TARDE</td>
+                                    <td>
+                                        <select name="schedules[<%= index * 2 + 1 %>][branch_id]" class="form-select form-select-sm border-primary">
+                                            <% if (typeof branches !== 'undefined' && branches.length > 0) { %>
+                                                <% branches.forEach(b => { %>
+                                                    <option value="<%= b.id %>" <%= b.id === aBranch ? 'selected' : '' %>><%= b.name %></option>
+                                                <% }) %>
+                                            <% } else { %>
+                                                <option value="1">Sucursal Principal</option>
+                                            <% } %>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <div class="form-check form-switch d-inline-block">
+                                            <input class="form-check-input" type="checkbox" name="schedules[<%= index * 2 + 1 %>][afternoon_enabled]" <%= aEnabled ? 'checked' : '' %>>
+                                        </div>
+                                    </td>
+                                    <input type="hidden" name="schedules[<%= index * 2 + 1 %>][day_of_week]" value="<%= day %>">
+                                    <td><input type="time" name="schedules[<%= index * 2 + 1 %>][afternoon_start]" class="form-control form-control-sm" value="<%= aStart %>"></td>
+                                    <td><input type="time" name="schedules[<%= index * 2 + 1 %>][afternoon_end]" class="form-control form-control-sm" value="<%= aEnd %>"></td>
+                                    <td><input type="number" name="schedules[<%= index * 2 + 1 %>][afternoon_limit]" class="form-control form-control-sm text-center" value="<%= aLimit %>" min="1" max="50"></td>
+                                </tr>
+                            <% }) %>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center py-3">
+                <a href="/admin/doctors" class="btn btn-secondary fw-bold px-4 shadow-sm">← Volver</a>
+                <div>
+                    <button type="submit" class="btn btn-success fw-bold px-4 shadow-sm">ACEPTAR / GUARDAR</button>
+                    <button type="submit" class="btn btn-warning fw-bold px-4 shadow-sm ms-2 text-dark">🔄 Actualizar Registro</button>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div class="container mb-5">
+    <section class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <h4 class="h5">Duración por tipo de atención</h4>
+            <p class="text-muted">Si se deja vacío, se usará la duración predeterminada del médico.</p>
+            <form action="/admin/doctors/<%= doctor.id %>/appointment-types" method="POST" class="row g-3 align-items-end">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <% const typeLabels = { consultation: 'Consulta', follow_up: 'Control / seguimiento', minor_procedure: 'Procedimiento menor' }; %>
+                <% ['consultation', 'follow_up', 'minor_procedure'].forEach(type => { const saved = appointmentTypes.find(item => item.appointment_type === type); %>
+                    <div class="col-md-4">
+                        <label class="form-label" for="duration_<%= type %>"><%= typeLabels[type] %> (minutos)</label>
+                        <input class="form-control" id="duration_<%= type %>" type="number" min="5" max="240" name="durations[<%= type %>]" value="<%= saved ? saved.duration_minutes : '' %>" placeholder="Usar valor predeterminado">
+                    </div>
+                <% }) %>
+                <div class="col-12"><button class="btn btn-primary" type="submit">Guardar duraciones</button></div>
+            </form>
+        </div>
+    </section>
+</div>
+
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

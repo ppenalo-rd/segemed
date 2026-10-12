@@ -1,0 +1,28 @@
+<nav class="navbar navbar-expand-lg bg-white border-bottom shadow-sm">
+    <div class="container-fluid px-lg-4">
+        <a class="navbar-brand fw-bold text-primary" href="/dashboard">SIGEMED</a>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a class="btn btn-sm btn-outline-dark" href="/dashboard">Menú principal</a>
+            <a class="btn btn-sm btn-outline-primary" href="/agenda">Agenda</a>
+            <a class="btn btn-sm btn-outline-primary" href="/pacientes">Pacientes</a>
+            <% if (currentUser && currentUser.roles.some((role) => ['system_admin', 'audit_security', 'admissions', 'doctor', 'nurse'].includes(role))) { %>
+                <a class="btn btn-sm btn-outline-primary" href="/reports">Reportes</a>
+            <% } %>
+            <% if (currentUser && currentUser.roles.includes('admissions')) { %>
+                <a class="btn btn-sm btn-outline-success" href="/billing">Caja</a>
+            <% } %>
+            <% if (currentUser && currentUser.roles.includes('system_admin')) { %>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/billing">Configurar facturación</a>
+            <% } %>
+            <% if (currentUser && currentUser.roles.some((role) => ['system_admin', 'audit_security'].includes(role))) { %>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/users">Usuarios</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/doctors">Médicos</a>
+            <% } %>
+            <span class="small text-muted d-none d-md-inline"><%= currentUser ? currentUser.name : '' %></span>
+            <form action="/logout" method="POST" class="m-0">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <button class="btn btn-sm btn-outline-danger" type="submit">Salir</button>
+            </form>
+        </div>
+    </div>
+</nav>

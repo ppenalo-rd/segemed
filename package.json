@@ -1,0 +1,31 @@
+{
+  "name": "sigemed-emr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema de gestión clínica ambulatoria SIGEMED",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "db:migrate": "node scripts/migrate.js",
+    "reports:refresh": "node scripts/refresh-reports.js",
+    "admin:create": "node scripts/create-admin.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "bootstrap": "^5.3.8",
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^18.0.5",
+    "ejs": "^3.1.10",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.23.1"
+  }
+}

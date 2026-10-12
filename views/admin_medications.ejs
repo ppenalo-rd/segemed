@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Catálogo de medicamentos | SIGEMED</title>
+    <link rel="stylesheet" href="/assets/bootstrap/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+<main class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="h3 mb-0">Catálogo local de medicamentos</h1>
+        <a href="/pacientes" class="btn btn-outline-secondary">Volver</a>
+    </div>
+    <% if (error === 'duplicate') { %>
+        <div class="alert alert-warning">El código o la combinación de nombre, concentración y forma ya existe. Revisa los registros antes de guardar.</div>
+    <% } %>
+    <section class="card shadow-sm mb-4">
+        <div class="card-header fw-bold">Agregar medicamento</div>
+        <div class="card-body">
+            <form method="POST" action="/admin/medications" class="row g-3">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="col-md-3"><label class="form-label">Código local</label><input class="form-control" name="code" maxlength="80"></div>
+                <div class="col-md-5"><label class="form-label">Nombre <span class="text-danger">*</span></label><input class="form-control" name="name" maxlength="180" required></div>
+                <div class="col-md-4"><label class="form-label">Principio activo</label><input class="form-control" name="active_ingredient" maxlength="180"></div>
+                <div class="col-md-3"><label class="form-label">Concentración</label><input class="form-control" name="strength" maxlength="100"></div>
+                <div class="col-md-3"><label class="form-label">Forma farmacéutica</label><input class="form-control" name="dosage_form" maxlength="100"></div>
+                <div class="col-md-3"><label class="form-label">Vía predeterminada</label><input class="form-control" name="route" maxlength="80"></div>
+                <div class="col-md-3 d-flex align-items-end"><button class="btn btn-primary w-100" type="submit">Agregar al catálogo</button></div>
+            </form>
+            <p class="form-text mt-3 mb-0">El catálogo es local y requiere revisión por la clínica. SIGEMED no valida indicaciones, interacciones, disponibilidad ni dosis.</p>
+        </div>
+    </section>
+
+    <section class="card shadow-sm">
+        <div class="card-header fw-bold">Medicamentos registrados</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0">
+                <thead><tr><th>Código</th><th>Nombre</th><th>Principio activo</th><th>Concentración</th><th>Forma</th><th>Vía</th><th>Estado</th><th>Acción</th></tr></thead>
+                <tbody>
+                <% medications.forEach((medication) => { %>
+                    <tr>
+                        <td>
+                            <form id="medication-<%= medication.id %>" method="POST" action="/admin/medications/<%= medication.id %>">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                            </form>
+                            <input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="code" value="<%= medication.code || '' %>" maxlength="80">
+                        </td>
+                            <td><input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="name" value="<%= medication.name %>" maxlength="180" required></td>
+                            <td><input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="active_ingredient" value="<%= medication.active_ingredient || '' %>" maxlength="180"></td>
+                            <td><input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="strength" value="<%= medication.strength || '' %>" maxlength="100"></td>
+                            <td><input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="dosage_form" value="<%= medication.dosage_form || '' %>" maxlength="100"></td>
+                            <td><input form="medication-<%= medication.id %>" class="form-control form-control-sm" name="route" value="<%= medication.route || '' %>" maxlength="80"></td>
+                            <td>
+                                <select form="medication-<%= medication.id %>" class="form-select form-select-sm" name="active">
+                                    <option value="true" <%= medication.active ? 'selected' : '' %>>Activo</option>
+                                    <option value="false" <%= medication.active ? '' : 'selected' %>>Inactivo</option>
+                                </select>
+                            </td>
+                            <td><button form="medication-<%= medication.id %>" class="btn btn-sm btn-outline-primary" type="submit">Guardar</button></td>
+                    </tr>
+                <% }) %>
+                <% if (!medications.length) { %><tr><td colspan="8" class="text-center text-muted py-4">El catálogo está vacío.</td></tr><% } %>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMR - Directorio de Pacientes</title>
+    <!-- Importar Bootstrap 5 CSS -->
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<div class="container mt-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="text-primary fw-bold">Directorio de Pacientes</h2>
+            <p class="text-muted mb-0">Gestión centralizada de pacientes - Atención Primaria (APS)</p>
+        </div>
+        <!-- Botón que activa la Ventana Modal de Registro -->
+        <button class="btn btn-success shadow-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoPaciente">
+            + Nuevo Paciente
+        </button>
+    </div>
+
+    <!-- Tabla de Pacientes -->
+    <div class="card shadow-sm border-0">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>ID</th>
+                            <th>Documento</th>
+                            <th>Nombre Completo</th>
+                            <th>Género</th>
+                            <th>Fecha Nacimiento</th>
+                            <th>Teléfono</th>
+                            <th>Email</th>
+                            <th class="text-center">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% if (pacientes.length > 0) { %>
+                            <% pacientes.forEach(paciente => { %>
+                                <tr>
+                                    <td><%= paciente.id %></td>
+                                    <td><code><%= paciente.dni_document %></code></td>
+                                    <td class="fw-bold text-dark"><%= paciente.first_name %> <%= paciente.last_name %></td>
+                                    <td>
+                                        <span class="badge bg-secondary"><%= paciente.gender || 'N/D' %></span>
+                                    </td>
+                                    <td><%= new Date(paciente.birth_date).toISOString().split('T')[0] %></td>
+                                    <td><%= paciente.phone || 'N/A' %></td>
+                                    <td><%= paciente.email || 'No registrado' %></td>
+                                    <td class="text-center">
+                                        <!-- Enlace dinámico mostrando el Número de Historia Médica (Ej: Ver HMC-10005) -->
+                                        <a href="/patients/<%= paciente.id %>/history" class="btn btn-sm btn-outline-primary mb-1 fw-bold shadow-sm">
+                                            Ver <%= paciente.medical_record_number || 'Historia' %>
+                                        </a>
+                                        
+                                        <!-- Botón Editar -->
+                                        <button class="btn btn-sm btn-outline-warning mb-1 shadow-sm" onclick="abrirModalEditar(
+                                            '<%= paciente.id %>',
+                                            '<%= paciente.dni_document %>',
+                                            '<%= paciente.first_name %>',
+                                            '<%= paciente.last_name %>',
+                                            '<%= new Date(paciente.birth_date).toISOString().split('T')[0] %>',
+                                            '<%= paciente.gender %>',
+                                            '<%= paciente.phone %>',
+                                            '<%= paciente.email %>'
+                                        )">
+                                            Editar
+                                        </button>
+                                    </td>
+                                </tr>
+                            <% }) %>
+                        <% } else { %>
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">No hay pacientes registrados aún en la base de datos.</td>
+                            </tr>
+                        <% } %>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- VENTANA MODAL: Formulario de Nuevo Paciente -->
+<div class="modal fade" id="modalNuevoPaciente" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form action="/patients/create" method="POST">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title" id="modalLabel">Registrar Nuevo Paciente</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Documento de Identidad (DNI):</label>
+                            <input type="text" class="form-control" name="dni_document" required placeholder="Ej: V-12345678">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Género:</label>
+                            <select class="form-select" name="gender">
+                                <option value="Masculino">Masculino</option>
+                                <option value="Femenino">Femenino</option>
+                                <option value="Otro">Otro</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Nombres:</label>
+                            <input type="text" class="form-control" name="first_name" required placeholder="Ej: Juan Carlos">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Apellidos:</label>
+                            <input type="text" class="form-control" name="last_name" required placeholder="Ej: Pérez Gómez">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Fecha de Nacimiento:</label>
+                            <input type="date" class="form-control" name="birth_date" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Teléfono de Contacto:</label>
+                            <input type="text" class="form-control" name="phone" placeholder="Ej: 0414-1234567">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-bold">Correo Electrónico:</label>
+                            <input type="email" class="form-control" name="email" placeholder="Ej: correo@dominio.com" 
+                                   pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$" 
+                                   title="Ingrese un correo electrónico válido, por ejemplo: usuario@dominio.com">
+                            <div class="form-text">Formato requerido: usuario@dominio.com</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-success">Guardar Paciente</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- VENTANA MODAL: Formulario de Editar Paciente -->
+<div class="modal fade" id="modalEditarPaciente" tabindex="-1" aria-labelledby="modalEditarLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form id="formEditarPaciente" method="POST">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="modal-header bg-warning text-dark">
+                    <h5 class="modal-title fw-bold" id="modalEditarLabel">Modificar Datos del Paciente</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Documento de Identidad (DNI):</label>
+                            <input type="text" class="form-control" id="edit_dni" name="dni_document" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Género:</label>
+                            <select class="form-select" id="edit_gender" name="gender">
+                                <option value="Masculino">Masculino</option>
+                                <option value="Femenino">Femenino</option>
+                                <option value="Otro">Otro</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Nombres:</label>
+                            <input type="text" class="form-control" id="edit_first_name" name="first_name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Apellidos:</label>
+                            <input type="text" class="form-control" id="edit_last_name" name="last_name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Fecha de Nacimiento:</label>
+                            <input type="date" class="form-control" id="edit_birth_date" name="birth_date" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Teléfono de Contacto:</label>
+                            <input type="text" class="form-control" id="edit_phone" name="phone">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-bold">Correo Electrónico:</label>
+                            <input type="email" class="form-control" id="edit_email" name="email"
+                                   pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$" 
+                                   title="Ingrese un correo electrónico válido, por ejemplo: usuario@dominio.com">
+                            <div class="form-text">Formato requerido: usuario@dominio.com</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-warning fw-bold">Guardar Cambios</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Importar Bootstrap 5 JS Bundle y Script de Edición -->
+<script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script>
+    function abrirModalEditar(id, dni, firstName, lastName, birthDate, gender, phone, email) {
+        // Asignar la ruta dinámicamente al formulario del modal
+        document.getElementById('formEditarPaciente').action = '/patients/update/' + id;
+        
+        // Rellenar los campos con la información actual del paciente
+        document.getElementById('edit_dni').value = dni;
+        document.getElementById('edit_first_name').value = firstName;
+        document.getElementById('edit_last_name').value = lastName;
+        document.getElementById('edit_birth_date').value = birthDate;
+        document.getElementById('edit_gender').value = gender;
+        document.getElementById('edit_phone').value = phone !== 'null' ? phone : '';
+        document.getElementById('edit_email').value = email !== 'null' ? email : '';
+
+        // Mostrar la ventana modal usando Bootstrap
+        var modal = new bootstrap.Modal(document.getElementById('modalEditarPaciente'));
+        modal.show();
+    }
+</script>
+</body>
+</html>
