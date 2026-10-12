@@ -61,6 +61,12 @@ Después de iniciar sesión, la aplicación redirige a `/dashboard`, el menú pr
 
 Las rutas de los módulos conservan sus propios controles de autorización; ocultar una tarjeta no sustituye las verificaciones RBAC del servidor. En Facturación y Caja, `system_admin` tiene acceso de consulta a las facturas, mientras que solo `admissions` puede crear o modificar facturas, emitirlas, registrar pagos o procesar reversiones.
 
+### Calendario médico
+
+La ruta `/agenda` ofrece una vista mensual, semanal y de lista con filtros por médico y sede. Las citas se cargan bajo demanda desde `GET /api/calendar/appointments` usando el rango visible del calendario; el rango se valida y limita a 62 días. El listado operativo queda acotado a los últimos tres días y los próximos 30; al abrir una cita histórica, `?date=YYYY-MM-DD` centra el listado y calendario en esa fecha. Al pasar o enfocar una cita se muestran hora, paciente, documento, motivo, médico, sede y estado. Al seleccionarla se abre su fila en la agenda. Al seleccionar un día se abre el formulario de agendamiento con la fecha precargada.
+
+La creación continúa usando `POST /appointments/create` y `GET /api/doctor-availability`; el servidor vuelve a validar la matriz de horarios, duración configurada para el tipo de atención y conflictos antes de guardar. Las cuentas con rol `doctor` solo reciben su propio calendario salvo que tengan además permisos de administración, admisión o auditoría. La vista carga FullCalendar 6.1.19 desde jsDelivr; el Content Security Policy permite ese origen para scripts.
+
 ### Refresco programado de reportería
 
 Ejecuta `npm run reports:refresh` fuera del proceso web; el comando actualiza las vistas analíticas y registra la ejecución. Programa su ejecución periódica con el usuario del sistema operativo que tenga acceso a la aplicación y PostgreSQL. Por ejemplo, con cron en Linux:

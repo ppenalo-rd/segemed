@@ -6,6 +6,135 @@
     <title>EMR - Sala de Espera y Agenda</title>
     <!-- Bootstrap 5 CSS -->
     <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .calendar-shell {
+            padding: clamp(1rem, 3vw, 2rem);
+            border: 1px solid rgba(255, 255, 255, 0.72);
+            border-radius: 1.25rem;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(235, 244, 255, 0.76));
+            box-shadow: 0 1rem 3rem rgba(31, 65, 114, 0.12);
+            backdrop-filter: blur(14px);
+        }
+
+        .calendar-filter {
+            min-width: min(100%, 210px);
+        }
+
+        #appointmentsCalendar .fc {
+            --fc-border-color: rgba(83, 112, 151, 0.14);
+            --fc-page-bg-color: transparent;
+            --fc-neutral-bg-color: rgba(231, 239, 250, 0.56);
+            color: #233752;
+        }
+
+        #appointmentsCalendar .fc .fc-toolbar-title {
+            color: #173f73;
+            font-size: clamp(1.15rem, 3vw, 1.65rem);
+            font-weight: 700;
+            text-transform: capitalize;
+        }
+
+        #appointmentsCalendar .fc .fc-button-primary {
+            border-color: #d5e3f4;
+            background: rgba(255, 255, 255, 0.84);
+            color: #24558c;
+            box-shadow: 0 0.25rem 0.75rem rgba(31, 65, 114, 0.08);
+        }
+
+        #appointmentsCalendar .fc .fc-button-primary:hover,
+        #appointmentsCalendar .fc .fc-button-primary:focus {
+            border-color: #7da9dd;
+            background: #e9f2ff;
+            color: #123e72;
+        }
+
+        #appointmentsCalendar .fc .fc-button-primary:disabled {
+            border-color: #d5e3f4;
+            background: #e9f2ff;
+            color: #56769c;
+        }
+
+        #appointmentsCalendar .fc .fc-daygrid-day-frame {
+            min-height: 6.5rem;
+            transition: background-color 0.18s ease;
+        }
+
+        #appointmentsCalendar .fc .fc-daygrid-day:hover .fc-daygrid-day-frame {
+            background: rgba(220, 235, 255, 0.42);
+        }
+
+        #appointmentsCalendar .fc .fc-day-today {
+            background: rgba(70, 143, 228, 0.09) !important;
+        }
+
+        #appointmentsCalendar .fc-event {
+            border: 0;
+            border-radius: 0.5rem;
+            padding: 0.12rem 0.32rem;
+            box-shadow: 0 0.2rem 0.6rem rgba(20, 42, 74, 0.12);
+            cursor: pointer;
+            font-size: 0.78rem;
+        }
+
+        #appointmentsCalendar .appointment-scheduled, .calendar-legend .appointment-scheduled { background: #3979c6; color: #fff; }
+        #appointmentsCalendar .appointment-waiting, .calendar-legend .appointment-waiting { background: #f3c84b; color: #382b08; }
+        #appointmentsCalendar .appointment-consultation, .calendar-legend .appointment-consultation { background: #21a2a7; color: #fff; }
+        #appointmentsCalendar .appointment-attended, .calendar-legend .appointment-attended { background: #3b9c72; color: #fff; }
+        #appointmentsCalendar .appointment-cancelled, .calendar-legend .appointment-cancelled { background: #cc6570; color: #fff; }
+        #appointmentsCalendar .appointment-other, .calendar-legend .appointment-other { background: #78899e; color: #fff; }
+
+        .calendar-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem 1rem;
+            color: #53677f;
+            font-size: 0.8rem;
+        }
+
+        .calendar-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .calendar-legend-dot {
+            width: 0.65rem;
+            height: 0.65rem;
+            border-radius: 50%;
+        }
+
+        .appointment-hover-card {
+            position: fixed;
+            z-index: 1090;
+            width: min(300px, calc(100vw - 24px));
+            padding: 0.85rem 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.78);
+            border-radius: 0.9rem;
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 0.8rem 2.2rem rgba(21, 45, 78, 0.2);
+            backdrop-filter: blur(16px);
+            color: #263b55;
+            pointer-events: none;
+        }
+
+        .appointment-hover-card[hidden] { display: none; }
+        .appointment-hover-card strong { color: #174a82; }
+        .appointment-hover-card .hover-card-line { margin-top: 0.28rem; font-size: 0.84rem; overflow-wrap: anywhere; }
+
+        @media (max-width: 575.98px) {
+            #appointmentsCalendar .fc .fc-toolbar {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 0.65rem;
+            }
+
+            #appointmentsCalendar .fc .fc-toolbar-chunk:last-child {
+                width: 100%;
+                display: flex;
+                flex-wrap: wrap;
+            }
+        }
+    </style>
 </head>
 <body class="bg-light">
 <%- include('partials/navigation') %>
@@ -26,10 +155,58 @@
         </div>
     </div>
 
+    <section class="calendar-shell mb-4" aria-labelledby="calendarHeading">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+            <div>
+                <h3 id="calendarHeading" class="h4 fw-bold text-primary mb-1">Calendario médico</h3>
+                <p class="text-secondary mb-0">Consulta por mes o semana. Selecciona un día para agendar.</p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <div class="calendar-filter">
+                    <label class="visually-hidden" for="calendarDoctorFilter">Filtrar por médico</label>
+                    <select class="form-select form-select-sm" id="calendarDoctorFilter" aria-label="Filtrar por médico">
+                        <% if (!calendarDoctorId) { %>
+                            <option value="">Todos los médicos</option>
+                        <% } %>
+                        <% if (doctores) { doctores.forEach((doctor) => { %>
+                            <option value="<%= doctor.id %>" <%= Number(calendarDoctorId) === doctor.id ? 'selected' : '' %>>
+                                Dr. <%= doctor.name %> · <%= doctor.main_specialty || 'General' %>
+                            </option>
+                        <% }); } %>
+                    </select>
+                </div>
+                <div class="calendar-filter">
+                    <label class="visually-hidden" for="calendarBranchFilter">Filtrar por sede</label>
+                    <select class="form-select form-select-sm" id="calendarBranchFilter" aria-label="Filtrar por sede">
+                        <option value="">Todas las sedes</option>
+                        <% if (sucursales) { sucursales.forEach((sucursal) => { %>
+                            <option value="<%= sucursal.id %>"><%= sucursal.name %></option>
+                        <% }); } %>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div id="appointmentsCalendar"
+             data-initial-date="<%= calendarQueueDate || '' %>"></div>
+        <div class="calendar-legend mt-3" aria-label="Leyenda de estados">
+            <span class="calendar-legend-item"><i class="calendar-legend-dot appointment-scheduled"></i>Programada</span>
+            <span class="calendar-legend-item"><i class="calendar-legend-dot appointment-waiting"></i>En sala</span>
+            <span class="calendar-legend-item"><i class="calendar-legend-dot appointment-consultation"></i>En consulta</span>
+            <span class="calendar-legend-item"><i class="calendar-legend-dot appointment-attended"></i>Atendida</span>
+            <span class="calendar-legend-item"><i class="calendar-legend-dot appointment-cancelled"></i>Cancelada</span>
+        </div>
+        <div id="calendarLoadError" class="alert alert-danger mt-3 mb-0" role="alert" hidden></div>
+    </section>
+
     <!-- Tabla Dinámica de Citas -->
     <div class="card shadow-sm border-0">
         <div class="card-header bg-dark text-white fw-bold">
             Flujo de Pacientes
+            <small class="d-block fw-normal text-white-50">
+                <%= calendarQueueDate
+                    ? `Citas alrededor del ${calendarQueueDate}`
+                    : 'Últimos 3 días y próximos 30 días' %>
+            </small>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
@@ -49,7 +226,7 @@
                     <tbody>
                         <% if (citas && citas.length > 0) { %>
                             <% citas.forEach(cita => { %>
-                                <tr>
+                                <tr id="appointment-<%= cita.id %>">
                                     <td class="fw-bold ps-3"><%= cita.first_name %> <%= cita.last_name %></td>
                                     <td><code><%= cita.dni_document %></code></td>
                                     <td>
@@ -270,10 +447,194 @@
 
 <!-- Bootstrap 5 JS Bundle -->
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.19/index.global.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.19/locales/es.global.min.js" crossorigin="anonymous"></script>
 
 <!-- Script dinámico de alta rápida y consulta de disponibilidad. -->
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        const calendarElement = document.getElementById('appointmentsCalendar');
+        const doctorFilter = document.getElementById('calendarDoctorFilter');
+        const branchFilter = document.getElementById('calendarBranchFilter');
+        const calendarLoadError = document.getElementById('calendarLoadError');
+        const appointmentModalElement = document.getElementById('nuevaCitaModal');
+        const appointmentModal = new bootstrap.Modal(appointmentModalElement);
+        const appointmentDateInput = document.querySelector('input[name="appointment_date"]');
+        const appointmentDoctorSelect = document.getElementById('appointmentDoctor');
+        const appointmentBranchSelect = document.querySelector('select[name="branch_id"]');
+        const hoverCard = document.createElement('div');
+        hoverCard.className = 'appointment-hover-card';
+        hoverCard.setAttribute('role', 'tooltip');
+        hoverCard.hidden = true;
+        document.body.appendChild(hoverCard);
+
+        function hideAppointmentCard() {
+            hoverCard.hidden = true;
+        }
+
+        function showAppointmentCard(eventElement, appointment) {
+            const props = appointment.extendedProps;
+            hoverCard.replaceChildren();
+            const heading = document.createElement('strong');
+            heading.textContent = `${props.appointmentTime} · ${props.patientName}`;
+            hoverCard.appendChild(heading);
+
+            [
+                ['Documento', props.documentNumber],
+                ['Motivo', props.reason],
+                ['Médico', props.doctorName],
+                ['Sede', props.branchName],
+                ['Estado', props.status],
+            ].forEach(([label, value]) => {
+                const line = document.createElement('div');
+                line.className = 'hover-card-line';
+                line.textContent = `${label}: ${value}`;
+                hoverCard.appendChild(line);
+            });
+
+            hoverCard.hidden = false;
+            const target = eventElement.getBoundingClientRect();
+            const card = hoverCard.getBoundingClientRect();
+            const left = Math.max(12, Math.min(target.left, window.innerWidth - card.width - 12));
+            const top = target.bottom + card.height + 12 <= window.innerHeight
+                ? target.bottom + 8
+                : Math.max(12, target.top - card.height - 8);
+            hoverCard.style.left = `${left}px`;
+            hoverCard.style.top = `${top}px`;
+        }
+
+        function showDayAppointmentCard(dayElement, appointments) {
+            hoverCard.replaceChildren();
+            const heading = document.createElement('strong');
+            heading.textContent = `Citas del día (${appointments.length})`;
+            hoverCard.appendChild(heading);
+
+            appointments.slice(0, 5).forEach((appointment) => {
+                const props = appointment.extendedProps;
+                const item = document.createElement('div');
+                item.className = 'hover-card-line border-top pt-2 mt-2';
+                const patient = document.createElement('strong');
+                patient.textContent = `${props.appointmentTime} · ${props.patientName}`;
+                item.appendChild(patient);
+                [
+                    `Documento: ${props.documentNumber}`,
+                    `Motivo: ${props.reason}`,
+                ].forEach((text) => {
+                    const line = document.createElement('div');
+                    line.textContent = text;
+                    item.appendChild(line);
+                });
+                hoverCard.appendChild(item);
+            });
+            if (appointments.length > 5) {
+                const more = document.createElement('div');
+                more.className = 'hover-card-line text-muted';
+                more.textContent = `Y ${appointments.length - 5} citas más.`;
+                hoverCard.appendChild(more);
+            }
+
+            hoverCard.hidden = false;
+            const target = dayElement.getBoundingClientRect();
+            const card = hoverCard.getBoundingClientRect();
+            const left = Math.max(12, Math.min(target.left, window.innerWidth - card.width - 12));
+            const top = target.bottom + card.height + 12 <= window.innerHeight
+                ? target.bottom + 8
+                : Math.max(12, target.top - card.height - 8);
+            hoverCard.style.left = `${left}px`;
+            hoverCard.style.top = `${top}px`;
+        }
+
+        if (window.FullCalendar) {
+            const calendar = new FullCalendar.Calendar(calendarElement, {
+                initialView: 'dayGridMonth',
+                initialDate: calendarElement.dataset.initialDate || undefined,
+                locale: 'es',
+                firstDay: 1,
+                height: 'auto',
+                dayMaxEvents: true,
+                navLinks: true,
+                nowIndicator: true,
+                headerToolbar: {
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: 'dayGridMonth,timeGridWeek,listWeek',
+                },
+                buttonText: {
+                    today: 'Hoy',
+                    month: 'Mes',
+                    week: 'Semana',
+                    list: 'Lista',
+                },
+                events: async (fetchInfo) => {
+                    const params = new URLSearchParams({
+                        start: fetchInfo.startStr,
+                        end: fetchInfo.endStr,
+                    });
+                    if (doctorFilter.value) params.set('doctor_id', doctorFilter.value);
+                    if (branchFilter.value) params.set('branch_id', branchFilter.value);
+
+                    try {
+                        const response = await fetch(`/api/calendar/appointments?${params}`);
+                        const events = await response.json();
+                        if (!response.ok) throw new Error(events.error || 'No se pudo cargar el calendario.');
+                        calendarLoadError.hidden = true;
+                        return events;
+                    } catch (error) {
+                        calendarLoadError.textContent = error.message;
+                        calendarLoadError.hidden = false;
+                        throw error;
+                    }
+                },
+                dateClick: (info) => {
+                    appointmentDateInput.value = info.dateStr.slice(0, 10);
+                    if (doctorFilter.value) appointmentDoctorSelect.value = doctorFilter.value;
+                    if (branchFilter.value) appointmentBranchSelect.value = branchFilter.value;
+                    document.getElementById('bookingFeedback').hidden = true;
+                    appointmentModal.show();
+                    fetchAvailableSlots();
+                },
+                eventClick: (info) => {
+                    if (info.event.url) {
+                        info.jsEvent.preventDefault();
+                        window.location.assign(info.event.url);
+                    }
+                },
+                eventDidMount: (info) => {
+                    const show = () => showAppointmentCard(info.el, info.event);
+                    info.el.addEventListener('mouseenter', show);
+                    info.el.addEventListener('mouseleave', hideAppointmentCard);
+                    info.el.addEventListener('focus', show);
+                    info.el.addEventListener('blur', hideAppointmentCard);
+                },
+                eventWillUnmount: hideAppointmentCard,
+                dayCellDidMount: (info) => {
+                    const dateKey = [
+                        info.date.getFullYear(),
+                        String(info.date.getMonth() + 1).padStart(2, '0'),
+                        String(info.date.getDate()).padStart(2, '0'),
+                    ].join('-');
+                    info.el.addEventListener('pointerover', (event) => {
+                        if (event.target.closest('.fc-event')) return;
+                        const appointments = calendar.getEvents().filter(
+                            (appointment) => appointment.startStr.slice(0, 10) === dateKey
+                        );
+                        if (appointments.length) showDayAppointmentCard(info.el, appointments);
+                    });
+                    info.el.addEventListener('pointerout', (event) => {
+                        if (!(event.relatedTarget instanceof Node) || !info.el.contains(event.relatedTarget)) {
+                            hideAppointmentCard();
+                        }
+                    });
+                },
+            });
+            calendar.render();
+            doctorFilter.addEventListener('change', () => calendar.refetchEvents());
+            branchFilter.addEventListener('change', () => calendar.refetchEvents());
+        } else {
+            calendarLoadError.textContent = 'No se pudo cargar el calendario interactivo. Puedes seguir usando la agenda y el formulario de citas.';
+            calendarLoadError.hidden = false;
+        }
+
         const doctorSelect = document.getElementById('appointmentDoctor');
         const branchSelect = document.querySelector('select[name="branch_id"]');
         const dateInput = document.querySelector('input[name="appointment_date"]');

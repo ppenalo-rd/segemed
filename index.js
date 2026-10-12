@@ -10,6 +10,7 @@ const db = require('./db');
 const PDFDocument = require('pdfkit'); 
 const { canAssignRole, requireAuthentication, requireRole, verifyCredentials } = require('./auth');
 const booking = require('./services/booking');
+const { mapAppointmentsToCalendarEvents } = require('./services/appointment-calendar');
 const doctorSchedules = require('./services/doctor-schedules');
 const { normalizeDiagnosisCodes } = require('./services/clinical-note');
 const { normalizeStudyOrderInput } = require('./services/study-orders');
@@ -44,7 +45,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'data:'],
@@ -1312,33 +1313,138 @@ app.get('/patients/:patientId/full-history/:consultId', async (req, res) => {
 // 4. MÓDULO: AGENDA Y SALA DE ESPERA
 // ==========================================
 
+function isDoctorCalendarScoped(roles) {
+  const broadAccessRoles = ['system_admin', 'admissions', 'audit_security'];
+  return roles.includes('doctor') && !roles.some((role) => broadAccessRoles.includes(role));
+}
+
 // RUTA GET: Renderizar la Sala de Espera y el Formulario de Citas
 app.get('/agenda', async (req, res) => {
+  const requestedQueueDate = req.query.date ? String(req.query.date) : null;
+  if (requestedQueueDate) {
+    try {
+      booking.getWeekday(requestedQueueDate);
+    } catch {
+      return res.status(400).send('La fecha de agenda no es válida.');
+    }
+  }
+
   try {
+    const roles = req.session.user.roles || [];
+    const doctorScoped = isDoctorCalendarScoped(roles);
+    const doctorProfileResult = doctorScoped
+      ? await db.query('SELECT doctor_id FROM doctor_user_accounts WHERE user_id = $1', [req.session.user.id])
+      : null;
+    if (doctorScoped && !doctorProfileResult.rows.length) {
+      return res.status(403).send('Tu cuenta médica no tiene un perfil profesional vinculado.');
+    }
+    const doctorProfileId = doctorScoped ? doctorProfileResult.rows[0].doctor_id : null;
     const queryCitas = `
       SELECT a.id, a.appointment_date, a.status, a.reason_for_visit, a.time_scheduled,
-             a.duration_minutes, a.care_mode, a.telehealth_url,
+             a.duration_minutes, a.care_mode,
              p.first_name, p.last_name, p.dni_document, u.name AS doctor_name
       FROM appointments a
       JOIN patients p ON a.patient_id = p.id
       LEFT JOIN users u ON a.doctor_id = u.id
+      WHERE a.appointment_date >= (COALESCE($1::date, CURRENT_DATE) - INTERVAL '3 days')::date
+        AND a.appointment_date < (COALESCE($1::date, CURRENT_DATE) + INTERVAL '31 days')::date
+        AND ($2::integer IS NULL OR a.doctor_id = $2)
       ORDER BY a.appointment_date ASC, a.time_scheduled ASC
     `;
-    const { rows: citas } = await db.query(queryCitas);
+    const { rows: citas } = await db.query(queryCitas, [
+      requestedQueueDate,
+      doctorScoped ? req.session.user.id : null,
+    ]);
 
-    const { rows: doctores } = await db.query(
-      `SELECT d.id, d.name, d.main_specialty
+    const doctorQuery = `
+       SELECT d.id, d.name, d.main_specialty
        FROM doctors d
        JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
        WHERE d.is_annulled IS DISTINCT FROM TRUE
-       ORDER BY d.name ASC`
-    );
+         AND ($1::integer IS NULL OR d.id = $1)
+       ORDER BY d.name ASC`;
+    const { rows: doctores } = await db.query(doctorQuery, [doctorProfileId]);
     const { rows: sucursales } = await db.query('SELECT id, name FROM branches ORDER BY name ASC');
 
-    res.render('agenda', { citas, doctores, sucursales });
+    res.render('agenda', {
+      citas,
+      doctores,
+      sucursales,
+      calendarDoctorId: doctorProfileId,
+      calendarQueueDate: requestedQueueDate,
+    });
   } catch (err) {
     console.error('Error al cargar la agenda:', err.message);
     res.status(500).send('Error al cargar la Sala de Espera.');
+  }
+});
+
+// ENDPOINT API: Entrega los eventos del calendario dentro de un rango acotado.
+app.get('/api/calendar/appointments', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'), async (req, res) => {
+  const { start, end } = req.query;
+  const roles = req.session.user.roles || [];
+  const doctorScoped = isDoctorCalendarScoped(roles);
+  const requestedDoctorId = req.query.doctor_id ? String(req.query.doctor_id) : '';
+  const branchId = req.query.branch_id ? String(req.query.branch_id) : '';
+
+  if ((requestedDoctorId && !/^[1-9]\d*$/.test(requestedDoctorId))
+      || (branchId && !/^[1-9]\d*$/.test(branchId))) {
+    return res.status(400).json({ error: 'El filtro de médico o sede no es válido.' });
+  }
+
+  let dateRange;
+  try {
+    dateRange = booking.normalizeCalendarRange(start, end);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  try {
+    let effectiveDoctorId = requestedDoctorId || null;
+    if (doctorScoped) {
+      const profileResult = await db.query(
+        'SELECT doctor_id FROM doctor_user_accounts WHERE user_id = $1',
+        [req.session.user.id]
+      );
+      if (!profileResult.rows.length) {
+        return res.status(403).json({ error: 'Tu cuenta médica no tiene un perfil profesional vinculado.' });
+      }
+      const ownDoctorId = Number(profileResult.rows[0].doctor_id);
+      if (effectiveDoctorId && Number(effectiveDoctorId) !== ownDoctorId) {
+        return res.status(403).json({ error: 'Solo puedes consultar tu propio calendario médico.' });
+      }
+      effectiveDoctorId = String(ownDoctorId);
+    }
+
+    const { rows } = await db.query(
+      `SELECT a.id, a.appointment_date::text AS appointment_date,
+              to_char(a.time_scheduled, 'HH24:MI') AS appointment_time,
+              a.duration_minutes, a.status, a.reason_for_visit,
+              p.first_name, p.last_name, p.dni_document, p.document_type,
+              d.name AS doctor_name, b.name AS branch_name
+       FROM appointments a
+       JOIN patients p ON p.id = a.patient_id
+       JOIN users u ON u.id = a.doctor_id
+       LEFT JOIN doctor_user_accounts dua ON dua.user_id = u.id
+       LEFT JOIN doctors d ON d.id = dua.doctor_id
+       JOIN branches b ON b.id = a.branch_id
+       WHERE a.appointment_date >= $1::date
+         AND a.appointment_date < $2::date
+         AND ($3::integer IS NULL OR dua.doctor_id = $3)
+         AND ($4::integer IS NULL OR a.branch_id = $4)
+       ORDER BY a.appointment_date, a.time_scheduled`,
+      [
+        dateRange.startDate,
+        dateRange.endDate,
+        effectiveDoctorId ? Number(effectiveDoctorId) : null,
+        branchId ? Number(branchId) : null,
+      ]
+    );
+
+    res.json(mapAppointmentsToCalendarEvents(rows));
+  } catch (error) {
+    console.error('Error al consultar las citas del calendario:', error.message);
+    res.status(500).json({ error: 'No se pudo cargar el calendario de citas.' });
   }
 });
 

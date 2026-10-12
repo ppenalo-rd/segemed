@@ -4,6 +4,7 @@ const {
   generateAvailableSlots,
   getWeekday,
   intervalsOverlap,
+  normalizeCalendarRange,
   timeToMinutes,
 } = require('../services/booking');
 const { normalizeDoctorScheduleSlots } = require('../services/doctor-schedules');
@@ -30,6 +31,21 @@ test('genera turnos según duración y excluye bloques ocupados', () => {
     [{ start: '08:30:00', duration: 30 }]
   );
   assert.deepEqual(slots, ['08:00', '09:00']);
+});
+
+test('valida rangos de calendario mensuales y semanales con fin exclusivo', () => {
+  assert.deepEqual(normalizeCalendarRange('2026-10-01T00:00:00-04:00', '2026-11-01'), {
+    startDate: '2026-10-01',
+    endDate: '2026-11-01',
+  });
+  assert.deepEqual(normalizeCalendarRange('2026-10-12', '2026-10-19'), {
+    startDate: '2026-10-12',
+    endDate: '2026-10-19',
+  });
+  assert.throws(() => normalizeCalendarRange('2026-02-30', '2026-03-01'), /no existe/);
+  assert.throws(() => normalizeCalendarRange('2026-10-01garbage', '2026-11-01'), /fechas válidas/);
+  assert.throws(() => normalizeCalendarRange('2026-10-01T99:00:00Z', '2026-11-01'), /fechas válidas/);
+  assert.throws(() => normalizeCalendarRange('2026-10-12', '2027-01-01'), /1 a 62 días/);
 });
 
 test('normaliza por separado turnos de mañana y tarde para guardar la matriz semanal', () => {
