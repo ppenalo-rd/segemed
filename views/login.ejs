@@ -17,6 +17,7 @@
             <% } %>
             <form action="/login" method="POST">
                 <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <input type="hidden" name="returnTo" value="<%= returnTo || '/dashboard' %>">
                 <div class="mb-3">
                     <label class="form-label" for="email">Correo electrónico</label>
                     <input class="form-control" id="email" name="email" type="email" autocomplete="username" required autofocus>

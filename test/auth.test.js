@@ -4,6 +4,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const path = require('node:path');
+const { startSmtpSink } = require('../test-support/smtp-sink');
 require('dotenv').config();
 const { canAssignRole } = require('../auth');
 
@@ -59,6 +60,7 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
   ];
   const users = [];
   const sessions = new Map();
+  const smtpSink = await startSmtpSink();
   const probe = require('node:net').createServer();
   await new Promise((resolve, reject) => {
     probe.once('error', reject);
@@ -74,6 +76,12 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
       NODE_ENV: 'development',
       PORT: String(port),
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: String(smtpSink.port),
+      SMTP_REQUIRE_TLS: 'false',
+      SMTP_USER: 'test-user',
+      SMTP_PASSWORD: 'test-password',
+      SMTP_FROM: 'SIGEMED Tests <no-reply@example.invalid>',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -169,7 +177,23 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
         body: new URLSearchParams({ email, password, _csrf: csrfToken }),
       });
       assert.equal(loginResponse.status, 302);
-      assert.equal(loginResponse.headers.get('location'), '/dashboard');
+      assert.equal(loginResponse.headers.get('location'), '/auth/verify-otp');
+
+      const otpPage = await request(actor.key, '/auth/verify-otp');
+      const otpHtml = await otpPage.text();
+      const otpCsrfToken = otpHtml.match(/name="_csrf" value="([^"]+)"/)?.[1];
+      assert.ok(otpCsrfToken, 'la vista OTP debe proporcionar token CSRF');
+      const emailMessage = await smtpSink.nextMessage();
+      const otp = emailMessage.match(/\b(\d{6})\b/)?.[1];
+      assert.ok(otp, 'el correo de prueba debe contener un código OTP de seis dígitos');
+      const verifyResponse = await request(actor.key, '/auth/verify-otp', {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ otp, _csrf: otpCsrfToken }),
+      });
+      assert.equal(verifyResponse.status, 302);
+      assert.equal(verifyResponse.headers.get('location'), '/dashboard');
 
       const dashboardResponse = await request(actor.key, '/dashboard');
       assert.equal(dashboardResponse.status, 200);
@@ -199,6 +223,7 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
       if (!failure) throw error;
       console.error('No se pudieron limpiar los fixtures de autenticación:', error.message);
     } finally {
+      await smtpSink.close();
       await db.end();
     }
   }

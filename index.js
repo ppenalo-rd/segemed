@@ -8,7 +8,22 @@ const helmet = require('helmet');
 const { rateLimit } = require('express-rate-limit');
 const db = require('./db');
 const PDFDocument = require('pdfkit'); 
-const { canAssignRole, requireAuthentication, requireRole, verifyCredentials } = require('./auth');
+const {
+  canAssignRole,
+  getActiveUserById,
+  requireAuthentication,
+  requireRole,
+  verifyCredentials,
+} = require('./auth');
+const {
+  OTP_MAX_ATTEMPTS,
+  OTP_RESEND_COOLDOWN_SECONDS,
+  OTP_TTL_MINUTES,
+  generateOtp,
+  hashOtp,
+  otpMatches,
+} = require('./services/otp');
+const { sendLoginOtp } = require('./services/email');
 const booking = require('./services/booking');
 const { mapAppointmentsToCalendarEvents } = require('./services/appointment-calendar');
 const doctorSchedules = require('./services/doctor-schedules');
@@ -103,6 +118,54 @@ const loginRateLimit = rateLimit({
   legacyHeaders: false,
   message: 'Demasiados intentos de acceso. Espera 15 minutos e inténtalo de nuevo.',
 });
+const otpVerifyRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: 'Demasiados intentos de verificación. Vuelve a iniciar sesión más tarde.',
+});
+const otpResendRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: 'Se alcanzó el límite para reenviar códigos. Inténtalo más tarde.',
+});
+
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function destroySession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.destroy((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function validReturnTo(value) {
+  return typeof value === 'string'
+      && value.startsWith('/')
+      && !value.startsWith('//')
+      && !value.includes('\\')
+    ? value
+    : '/dashboard';
+}
+
+function maskEmail(email) {
+  const [localPart, domain] = String(email).split('@');
+  if (!localPart || !domain) return 'tu correo registrado';
+  const visible = localPart.length > 2 ? localPart.slice(0, 2) : localPart.slice(0, 1);
+  return `${visible}${'*'.repeat(Math.max(2, localPart.length - visible.length))}@${domain}`;
+}
 
 app.get('/health', async (req, res) => {
   try {
@@ -114,15 +177,32 @@ app.get('/health', async (req, res) => {
   }
 });
 
-app.get('/login', (req, res) => {
-  if (req.session.user) return res.redirect('/dashboard');
-  res.render('login', { error: null });
+app.get('/login', async (req, res, next) => {
+  if (req.session.user?.is_2fa_verified === true) return res.redirect('/dashboard');
+  if (req.session.pendingOtpUserId) return res.redirect('/auth/verify-otp');
+  if (req.session.user) {
+    try {
+      await destroySession(req);
+      res.clearCookie('sigemed.sid');
+    } catch (error) {
+      return next(error);
+    }
+  }
+  res.render('login', {
+    error: req.query.error === 'otp'
+      ? 'La verificación expiró o superó el máximo de intentos. Inicia sesión nuevamente.'
+      : null,
+    returnTo: validReturnTo(req.query.returnTo),
+  });
 });
 
 app.post('/login', loginRateLimit, async (req, res, next) => {
   const email = String(req.body.email || '').trim();
   const password = String(req.body.password || '');
+  const returnTo = validReturnTo(req.body.returnTo || req.query.returnTo);
   try {
+    if (req.session.user?.is_2fa_verified === true) return res.redirect('/dashboard');
+    if (req.session.pendingOtpUserId) return res.redirect('/auth/verify-otp');
     const user = await verifyCredentials(email, password);
     if (!user) {
       await recordAccessEvent(db, req, {
@@ -130,7 +210,10 @@ app.post('/login', loginRateLimit, async (req, res, next) => {
         resourceType: 'authentication',
         details: { reason: 'invalid_credentials' },
       });
-      return res.status(401).render('login', { error: 'Correo o contraseña no válidos.' });
+      return res.status(401).render('login', {
+        error: 'Correo o contraseña no válidos.',
+        returnTo,
+      });
     }
     if (user.roles.length === 0) {
       await recordAccessEvent(db, req, {
@@ -139,27 +222,262 @@ app.post('/login', loginRateLimit, async (req, res, next) => {
         userId: user.id,
         details: { reason: 'no_active_role' },
       });
-      return res.status(403).render('login', { error: 'La cuenta no tiene un perfil activo. Contacta al administrador.' });
-    }
-    await recordAccessEvent(db, req, {
-      eventType: 'auth_login_success',
-      resourceType: 'authentication',
-      userId: user.id,
-    });
-    req.session.regenerate((error) => {
-      if (error) return next(error);
-      req.session.user = user;
-      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-      const returnTo = typeof req.query.returnTo === 'string'
-          && req.query.returnTo.startsWith('/')
-          && !req.query.returnTo.startsWith('//')
-        ? req.query.returnTo
-        : '/dashboard';
-      req.session.save((saveError) => {
-        if (saveError) return next(saveError);
-        res.redirect(returnTo);
+      return res.status(403).render('login', {
+        error: 'La cuenta no tiene un perfil activo. Contacta al administrador.',
+        returnTo,
       });
+    }
+
+    const code = generateOtp();
+    await db.query(
+      `INSERT INTO email_otp_challenges (user_id, otp_hash, otp_expires_at, attempts, sent_at, resend_after)
+       VALUES ($1, $2, CURRENT_TIMESTAMP + ($3 * INTERVAL '1 minute'), 0,
+               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + ($4 * INTERVAL '1 second'))
+       ON CONFLICT (user_id) DO UPDATE
+       SET otp_hash = EXCLUDED.otp_hash,
+           otp_expires_at = EXCLUDED.otp_expires_at,
+           attempts = 0,
+           sent_at = EXCLUDED.sent_at,
+           resend_after = EXCLUDED.resend_after,
+           created_at = CURRENT_TIMESTAMP`,
+      [user.id, hashOtp(code, sessionSecret), OTP_TTL_MINUTES, OTP_RESEND_COOLDOWN_SECONDS]
+    );
+    await regenerateSession(req);
+    req.session.pendingOtpUserId = user.id;
+    req.session.pendingOtpReturnTo = returnTo;
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    await saveSession(req);
+    try {
+      await sendLoginOtp({ to: user.email, name: user.name, code, expiresMinutes: OTP_TTL_MINUTES });
+    } catch (emailError) {
+      await db.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [user.id]);
+      await destroySession(req);
+      res.clearCookie('sigemed.sid');
+      console.error('No se pudo enviar el OTP de acceso:', emailError.message);
+      return res.status(503).render('login', {
+        error: 'No se pudo enviar el código de verificación. Inténtalo más tarde o contacta al administrador.',
+        returnTo,
+      });
+    }
+    res.redirect('/auth/verify-otp');
+  } catch (error) {
+    next(error);
+  }
+});
+
+function requirePendingOtp(req, res, next) {
+  if (!req.session.pendingOtpUserId || req.session.user) return res.redirect('/login');
+  next();
+}
+
+app.get('/auth/verify-otp', requirePendingOtp, async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT u.email, c.otp_expires_at, c.resend_after
+       FROM email_otp_challenges c
+       JOIN users u ON u.id = c.user_id AND u.active = TRUE
+       WHERE c.user_id = $1`,
+      [req.session.pendingOtpUserId]
+    );
+    if (!rows.length) {
+      await destroySession(req);
+      res.clearCookie('sigemed.sid');
+      return res.redirect('/login?error=otp');
+    }
+    const challenge = rows[0];
+    res.render('verify-otp', {
+      error: req.query.error === 'expired'
+        ? 'El código venció. Puedes solicitar uno nuevo.'
+        : (req.query.error === 'wait'
+          ? 'Espera a que termine el contador antes de reenviar el código.'
+          : (req.query.error === 'invalid' ? 'El código no es válido. Verifica e inténtalo nuevamente.' : null)),
+      message: req.query.resent ? 'Enviamos un nuevo código a tu correo.' : null,
+      maskedEmail: maskEmail(challenge.email),
+      expiresAt: new Date(challenge.otp_expires_at).toISOString(),
+      resendAfter: new Date(challenge.resend_after).toISOString(),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/auth/verify-otp', otpVerifyRateLimit, requirePendingOtp, async (req, res, next) => {
+  const code = typeof req.body.otp === 'string' ? req.body.otp : '';
+  if (!/^\d{6}$/.test(code)) {
+    return res.redirect('/auth/verify-otp?error=invalid');
+  }
+
+  const client = await db.connect();
+  let failure;
+  let user;
+  let returnTo = req.session.pendingOtpReturnTo || '/dashboard';
+  try {
+    await client.query('BEGIN');
+    const challengeResult = await client.query(
+      `SELECT otp_hash, otp_expires_at, attempts,
+              otp_expires_at > CURRENT_TIMESTAMP AS is_unexpired
+       FROM email_otp_challenges
+       WHERE user_id = $1
+       FOR UPDATE`,
+      [req.session.pendingOtpUserId]
+    );
+    if (!challengeResult.rowCount) {
+      failure = 'expired';
+    } else {
+      const challenge = challengeResult.rows[0];
+      if (!challenge.is_unexpired) {
+        failure = 'expired';
+      } else if (Number(challenge.attempts) >= OTP_MAX_ATTEMPTS) {
+        await client.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [req.session.pendingOtpUserId]);
+        failure = 'locked';
+      } else if (!otpMatches(code, challenge.otp_hash, sessionSecret)) {
+        const attemptResult = await client.query(
+          `UPDATE email_otp_challenges
+           SET attempts = attempts + 1
+           WHERE user_id = $1
+           RETURNING attempts`,
+          [req.session.pendingOtpUserId]
+        );
+        if (Number(attemptResult.rows[0].attempts) >= OTP_MAX_ATTEMPTS) {
+          await client.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [req.session.pendingOtpUserId]);
+          failure = 'locked';
+        } else {
+          failure = 'invalid';
+        }
+      } else {
+        user = await getActiveUserById(req.session.pendingOtpUserId, client);
+        await client.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [req.session.pendingOtpUserId]);
+        if (!user) {
+          failure = 'account';
+        } else {
+          await recordAccessEvent(client, req, {
+            eventType: 'auth_otp_success',
+            resourceType: 'authentication',
+            userId: user.id,
+          });
+          await recordAccessEvent(client, req, {
+            eventType: 'auth_login_success',
+            resourceType: 'authentication',
+            userId: user.id,
+            details: { twoFactor: 'email_otp' },
+          });
+        }
+      }
+    }
+    if (['invalid', 'expired', 'locked'].includes(failure)) {
+      await recordAccessEvent(client, req, {
+        eventType: 'auth_otp_failure',
+        resourceType: 'authentication',
+        userId: req.session.pendingOtpUserId,
+        details: { reason: failure },
+      });
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir la verificación OTP:', rollbackError.message);
+    });
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  if (failure === 'locked' || failure === 'account') {
+    await destroySession(req);
+    res.clearCookie('sigemed.sid');
+    return res.redirect('/login?error=otp');
+  }
+  if (failure) {
+    return res.redirect(
+      failure === 'expired' ? '/auth/verify-otp?error=expired' : '/auth/verify-otp?error=invalid'
+    );
+  }
+
+  try {
+    await regenerateSession(req);
+    req.session.user = { ...user, is_2fa_verified: true };
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    await saveSession(req);
+    res.redirect(validReturnTo(returnTo));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/auth/resend-otp', otpResendRateLimit, requirePendingOtp, async (req, res, next) => {
+  const client = await db.connect();
+  const code = generateOtp();
+  let recipient;
+  let resendAllowed = false;
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `SELECT u.email, u.name, c.resend_after <= CURRENT_TIMESTAMP AS can_resend
+       FROM email_otp_challenges c
+       JOIN users u ON u.id = c.user_id AND u.active = TRUE
+       WHERE c.user_id = $1
+       FOR UPDATE OF c`,
+      [req.session.pendingOtpUserId]
+    );
+    if (!result.rowCount) {
+      await client.query('ROLLBACK');
+      await destroySession(req);
+      res.clearCookie('sigemed.sid');
+      return res.redirect('/login?error=otp');
+    }
+    if (!result.rows[0].can_resend) {
+      await client.query('ROLLBACK');
+      return res.redirect(429, '/auth/verify-otp?error=wait');
+    }
+    recipient = result.rows[0];
+    await client.query(
+      `UPDATE email_otp_challenges
+       SET otp_hash = $2,
+           otp_expires_at = CURRENT_TIMESTAMP + ($3 * INTERVAL '1 minute'),
+           attempts = 0,
+           sent_at = CURRENT_TIMESTAMP,
+           resend_after = CURRENT_TIMESTAMP + ($4 * INTERVAL '1 second')
+       WHERE user_id = $1`,
+      [
+        req.session.pendingOtpUserId,
+        hashOtp(code, sessionSecret),
+        OTP_TTL_MINUTES,
+        OTP_RESEND_COOLDOWN_SECONDS,
+      ]
+    );
+    await client.query('COMMIT');
+    resendAllowed = true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir el reenvío OTP:', rollbackError.message);
+    });
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  if (!resendAllowed) return;
+  try {
+    await sendLoginOtp({ to: recipient.email, name: recipient.name, code, expiresMinutes: OTP_TTL_MINUTES });
+    res.redirect('/auth/verify-otp?resent=1');
+  } catch (emailError) {
+    await db.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [req.session.pendingOtpUserId]);
+    await destroySession(req);
+    res.clearCookie('sigemed.sid');
+    console.error('No se pudo reenviar el OTP de acceso:', emailError.message);
+    res.status(503).render('login', {
+      error: 'No se pudo enviar el código. Inicia sesión nuevamente más tarde o contacta al administrador.',
+      returnTo: '/dashboard',
+    });
+  }
+});
+
+app.post('/auth/cancel-otp', requirePendingOtp, async (req, res, next) => {
+  try {
+    await db.query('DELETE FROM email_otp_challenges WHERE user_id = $1', [req.session.pendingOtpUserId]);
+    await destroySession(req);
+    res.clearCookie('sigemed.sid');
+    res.redirect('/login');
   } catch (error) {
     next(error);
   }

@@ -40,10 +40,32 @@ async function verifyCredentials(email, password) {
   };
 }
 
+async function getActiveUserById(userId, client = db) {
+  const { rows } = await client.query(
+    `SELECT u.id, u.name, u.email,
+            array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL) AS roles
+     FROM users u
+     LEFT JOIN user_roles ur ON ur.user_id = u.id
+     LEFT JOIN roles r ON r.id = ur.role_id AND r.active = TRUE
+     WHERE u.id = $1 AND u.active = TRUE
+     GROUP BY u.id`,
+    [userId]
+  );
+  if (!rows.length || !rows[0].roles?.length) return null;
+  return { ...rows[0], roles: rows[0].roles };
+}
+
 function requireAuthentication(req, res, next) {
   if (!req.session.user) {
     const returnTo = encodeURIComponent(req.originalUrl);
     return res.redirect(`/login?returnTo=${returnTo}`);
+  }
+  if (req.session.user.is_2fa_verified !== true) {
+    return req.session.destroy((error) => {
+      if (error) return next(error);
+      res.clearCookie('sigemed.sid');
+      res.redirect('/login');
+    });
   }
   res.locals.currentUser = req.session.user;
   next();
@@ -61,6 +83,7 @@ function requireRole(...allowedRoles) {
 
 module.exports = {
   canAssignRole,
+  getActiveUserById,
   requireAuthentication,
   requireRole,
   verifyCredentials,

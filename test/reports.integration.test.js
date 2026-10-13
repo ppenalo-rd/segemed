@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const { once } = require('node:events');
+const { startSmtpSink } = require('../test-support/smtp-sink');
 
 test('reportes agregados, exportaciones auditadas y acceso por rol', {
   skip: process.env.SIGEMED_REPORTS_INTEGRATION !== '1',
@@ -11,6 +12,7 @@ test('reportes agregados, exportaciones auditadas y acceso por rol', {
   require('dotenv').config();
   const db = require('../db');
   const root = require('node:path').join(__dirname, '..');
+  const smtpSink = await startSmtpSink();
   const marker = crypto.randomUUID();
   const shortMarker = marker.replace(/-/g, '').slice(0, 12);
   const patientMarker = `PatientOnly-${shortMarker}`;
@@ -33,6 +35,12 @@ test('reportes agregados, exportaciones auditadas y acceso por rol', {
       NODE_ENV: 'production',
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       TRUST_PROXY: '1',
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: String(smtpSink.port),
+      SMTP_REQUIRE_TLS: 'false',
+      SMTP_USER: 'test-user',
+      SMTP_PASSWORD: 'test-password',
+      SMTP_FROM: 'SIGEMED Tests <no-reply@example.invalid>',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -96,7 +104,22 @@ test('reportes agregados, exportaciones auditadas y acceso por rol', {
       body: new URLSearchParams({ email: user.email, password: user.password, _csrf: token }),
     });
     assert.equal(response.status, 302);
+    assert.equal(response.headers.get('location'), '/auth/verify-otp');
     assert.match(response.headers.get('set-cookie') || '', /;\s*secure(?:;|$)/i);
+    const otpPage = await request(actor, '/auth/verify-otp');
+    const otpToken = csrf(await otpPage.text());
+    const message = await smtpSink.nextMessage();
+    const otp = message.match(/\b(\d{6})\b/)?.[1];
+    assert.ok(otp, 'el correo de prueba debe contener un código OTP de seis dígitos');
+    const verification = await request(actor, '/auth/verify-otp', {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ otp, _csrf: otpToken }),
+    });
+    assert.equal(verification.status, 302);
+    assert.equal(verification.headers.get('location'), '/dashboard');
+    assert.match(verification.headers.get('set-cookie') || '', /;\s*secure(?:;|$)/i);
   }
 
   async function runRefresh() {
@@ -485,6 +508,7 @@ test('reportes agregados, exportaciones auditadas y acceso por rol', {
     failure = error;
     throw error;
   } finally {
+    await smtpSink.close();
     if (server.exitCode === null) server.kill();
     await new Promise((resolve) => {
       if (server.exitCode !== null) resolve();

@@ -10,7 +10,7 @@ SIGEMED es una aplicación de gestión clínica ambulatoria con consulta externa
 
 ## Configuración
 
-1. Copia `.env.example` a `.env` y configura los parámetros `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_DATABASE` y `PORT`. No compartas ni incorpores `.env` al control de versiones.
+1. Copia `.env.example` a `.env` y configura los parámetros `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_DATABASE` y `PORT`. Configura también `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM` para el envío de códigos 2FA. No compartas ni incorpores `.env` al control de versiones.
 2. Antes de iniciar en producción, configura `NODE_ENV=production` y un `SESSION_SECRET` aleatorio de al menos 32 caracteres. Puedes generar uno con:
 
    ```powershell
@@ -30,7 +30,13 @@ La base debe contar con el esquema inicial antes de aplicar las migraciones vers
 npm run db:migrate
 ```
 
-El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`.
+El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`. La migración `009_email_otp_authentication.sql` crea la tabla de desafíos OTP.
+
+### Autenticación de dos factores por correo
+
+Después de validar el correo y la contraseña, SIGEMED envía un código OTP de seis dígitos al correo registrado y requiere validarlo en `/auth/verify-otp` antes de crear la sesión autenticada. El código vence a los cinco minutos, admite hasta cinco intentos y puede reenviarse con una espera mínima de 60 segundos. Las rutas de verificación y reenvío además tienen límites de solicitudes por IP.
+
+Configura el SMTP de tu proveedor con los valores indicados en `.env.example`; el puerto 587 usa STARTTLS y el 465 usa TLS implícito. Mantén `SMTP_REQUIRE_TLS=true` salvo en pruebas SMTP locales aisladas. No se habilita una sesión de usuario si el correo no puede enviarse. No se almacena `otp_code` en texto claro: `email_otp_challenges.otp_hash` guarda un HMAC del código, y la expiración, reenvío e intentos se controlan en la base de datos. `is_2fa_verified` se mantiene en la sesión autenticada (no como estado global de `users`), evitando que la verificación de una sesión autorice otras sesiones concurrentes. Se auditan los éxitos y fallos de autenticación sin registrar el código.
 
 ### Moneda y facturación
 

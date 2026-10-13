@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
+const { startSmtpSink } = require('../test-support/smtp-sink');
 
 test('flujo autenticado de facturación, cobros multimoneda, reversos e inmutabilidad', {
   skip: process.env.SIGEMED_BILLING_INTEGRATION !== '1',
@@ -10,6 +11,7 @@ test('flujo autenticado de facturación, cobros multimoneda, reversos e inmutabi
   require('dotenv').config();
   const db = require('../db');
   const root = require('node:path').join(__dirname, '..');
+  const smtpSink = await startSmtpSink();
   const probe = require('node:net').createServer();
   await new Promise((resolve, reject) => {
     probe.once('error', reject);
@@ -19,7 +21,16 @@ test('flujo autenticado de facturación, cobros multimoneda, reversos e inmutabi
   await new Promise((resolve) => probe.close(resolve));
   const server = spawn(process.execPath, ['index.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port) },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: String(smtpSink.port),
+      SMTP_REQUIRE_TLS: 'false',
+      SMTP_USER: 'test-user',
+      SMTP_PASSWORD: 'test-password',
+      SMTP_FROM: 'SIGEMED Tests <no-reply@example.invalid>',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -91,7 +102,15 @@ test('flujo autenticado de facturación, cobros multimoneda, reversos e inmutabi
   async function login(actor, user) {
     const page = await request(actor, '/login');
     const token = csrf(await page.text());
-    await post(actor, '/login', { email: user.email, password: user.password }, token);
+    const loginResponse = await post(actor, '/login', { email: user.email, password: user.password }, token);
+    assert.equal(loginResponse.headers.get('location'), '/auth/verify-otp');
+    const otpPage = await request(actor, '/auth/verify-otp');
+    const otpToken = csrf(await otpPage.text());
+    const message = await smtpSink.nextMessage();
+    const otp = message.match(/\b(\d{6})\b/)?.[1];
+    assert.ok(otp, 'el correo de prueba debe contener un código OTP de seis dígitos');
+    const verification = await post(actor, '/auth/verify-otp', { otp }, otpToken);
+    assert.equal(verification.headers.get('location'), '/dashboard');
   }
 
   async function cleanup() {
@@ -366,6 +385,7 @@ test('flujo autenticado de facturación, cobros multimoneda, reversos e inmutabi
       if (!failure) throw error;
       console.error('No se pudo limpiar el fixture de facturación:', error.message);
     } finally {
+      await smtpSink.close();
       await db.end();
     }
   }
