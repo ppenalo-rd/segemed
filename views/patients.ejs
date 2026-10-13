@@ -21,6 +21,8 @@
             + Nuevo Paciente
         </button>
     </div>
+    <% if (message) { %><div class="alert alert-success" role="status"><%= message %></div><% } %>
+    <% if (error) { %><div class="alert alert-danger" role="alert"><%= error %></div><% } %>
 
     <!-- Tabla de Pacientes -->
     <div class="card shadow-sm border-0">
@@ -49,7 +51,7 @@
                                     <td>
                                         <span class="badge bg-secondary"><%= paciente.gender || 'N/D' %></span>
                                     </td>
-                                    <td><%= new Date(paciente.birth_date).toISOString().split('T')[0] %></td>
+                                    <td><%= paciente.birth_date ? new Date(paciente.birth_date).toISOString().split('T')[0] : 'N/D' %></td>
                                     <td><%= paciente.phone || 'N/A' %></td>
                                     <td><%= paciente.email || 'No registrado' %></td>
                                     <td class="text-center">
@@ -59,16 +61,20 @@
                                         </a>
                                         
                                         <!-- Botón Editar -->
-                                        <button class="btn btn-sm btn-outline-warning mb-1 shadow-sm" onclick="abrirModalEditar(
-                                            '<%= paciente.id %>',
-                                            '<%= paciente.dni_document %>',
-                                            '<%= paciente.first_name %>',
-                                            '<%= paciente.last_name %>',
-                                            '<%= new Date(paciente.birth_date).toISOString().split('T')[0] %>',
-                                            '<%= paciente.gender %>',
-                                            '<%= paciente.phone %>',
-                                            '<%= paciente.email %>'
-                                        )">
+                                        <button
+                                            class="btn btn-sm btn-outline-warning mb-1 shadow-sm"
+                                            type="button"
+                                            data-edit-patient
+                                            data-patient-id="<%= paciente.id %>"
+                                            data-patient-document="<%= paciente.dni_document || '' %>"
+                                            data-patient-document-type="<%= paciente.document_type %>"
+                                            data-patient-first-name="<%= paciente.first_name %>"
+                                            data-patient-last-name="<%= paciente.last_name %>"
+                                            data-patient-birth-date="<%= paciente.birth_date ? new Date(paciente.birth_date).toISOString().split('T')[0] : '' %>"
+                                            data-patient-gender="<%= paciente.gender || '' %>"
+                                            data-patient-phone="<%= paciente.phone || '' %>"
+                                            data-patient-email="<%= paciente.email || '' %>"
+                                            aria-label="Editar paciente <%= paciente.first_name %> <%= paciente.last_name %>">
                                             Editar
                                         </button>
                                     </td>
@@ -158,11 +164,12 @@
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Documento de Identidad (DNI):</label>
-                            <input type="text" class="form-control" id="edit_dni" name="dni_document" required>
+                            <input type="text" class="form-control" id="edit_dni" name="dni_document">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Género:</label>
                             <select class="form-select" id="edit_gender" name="gender">
+                                <option value="">No especificado</option>
                                 <option value="Masculino">Masculino</option>
                                 <option value="Femenino">Femenino</option>
                                 <option value="Otro">Otro</option>
@@ -178,7 +185,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Fecha de Nacimiento:</label>
-                            <input type="date" class="form-control" id="edit_birth_date" name="birth_date" required>
+                            <input type="date" class="form-control" id="edit_birth_date" name="birth_date">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Teléfono de Contacto:</label>
@@ -205,23 +212,21 @@
 <!-- Importar Bootstrap 5 JS Bundle y Script de Edición -->
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script>
-    function abrirModalEditar(id, dni, firstName, lastName, birthDate, gender, phone, email) {
-        // Asignar la ruta dinámicamente al formulario del modal
-        document.getElementById('formEditarPaciente').action = '/patients/update/' + id;
-        
-        // Rellenar los campos con la información actual del paciente
-        document.getElementById('edit_dni').value = dni;
-        document.getElementById('edit_first_name').value = firstName;
-        document.getElementById('edit_last_name').value = lastName;
-        document.getElementById('edit_birth_date').value = birthDate;
-        document.getElementById('edit_gender').value = gender;
-        document.getElementById('edit_phone').value = phone !== 'null' ? phone : '';
-        document.getElementById('edit_email').value = email !== 'null' ? email : '';
-
-        // Mostrar la ventana modal usando Bootstrap
-        var modal = new bootstrap.Modal(document.getElementById('modalEditarPaciente'));
-        modal.show();
-    }
+    const editPatientForm = document.getElementById('formEditarPaciente');
+    document.querySelectorAll('[data-edit-patient]').forEach((button) => {
+        button.addEventListener('click', () => {
+            editPatientForm.action = `/patients/update/${encodeURIComponent(button.dataset.patientId)}`;
+            editPatientForm.elements.dni_document.value = button.dataset.patientDocument;
+            editPatientForm.elements.dni_document.required = button.dataset.patientDocumentType !== 'none';
+            editPatientForm.elements.first_name.value = button.dataset.patientFirstName;
+            editPatientForm.elements.last_name.value = button.dataset.patientLastName;
+            editPatientForm.elements.birth_date.value = button.dataset.patientBirthDate;
+            editPatientForm.elements.gender.value = button.dataset.patientGender;
+            editPatientForm.elements.phone.value = button.dataset.patientPhone;
+            editPatientForm.elements.email.value = button.dataset.patientEmail;
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalEditarPaciente')).show();
+        });
+    });
 </script>
 </body>
 </html>

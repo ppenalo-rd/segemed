@@ -45,4 +45,16 @@ async function sendLoginOtp({ to, name, code, expiresMinutes = 5 }, env = proces
   });
 }
 
-module.exports = { createEmailTransport, sendLoginOtp };
+async function sendPasswordChangeOtp({ to, name, code, expiresMinutes = 5 }, env = process.env) {
+  const transport = createEmailTransport(env);
+  const safeName = escapeHtml(name || 'usuario');
+  await transport.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject: 'Verificación para cambio de contraseña SIGEMED',
+    text: `Hola ${name || 'usuario'}, el código para cambiar tu contraseña de SIGEMED es ${code}. Vence en ${expiresMinutes} minutos. Si no solicitaste este cambio, ignora este mensaje y contacta al administrador.`,
+    html: `<p>Hola ${safeName},</p><p>Se solicitó un cambio de contraseña para tu cuenta SIGEMED. Introduce este código para confirmarlo:</p><p style="font-size:28px;font-weight:bold;letter-spacing:8px">${code}</p><p>Este código vence en ${expiresMinutes} minutos. Si no solicitaste este cambio, ignora este mensaje y contacta al administrador.</p>`,
+  });
+}
+
+module.exports = { createEmailTransport, sendLoginOtp, sendPasswordChangeOtp };

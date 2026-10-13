@@ -18,6 +18,7 @@
 
     <% if (message) { %><div class="alert alert-success" role="status"><%= message %></div><% } %>
     <% if (error) { %><div class="alert alert-danger" role="alert"><%= error %></div><% } %>
+    <div id="userUpdateFeedback" aria-live="polite"></div>
 
     <section class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
@@ -110,6 +111,17 @@
                             <td><%= account.roles || 'Sin perfil' %></td>
                             <td><span class="badge <%= account.active ? 'text-bg-success' : 'text-bg-secondary' %>"><%= account.active ? 'Activa' : 'Inactiva' %></span></td>
                             <td class="text-end pe-4">
+                                <% if (isSystemAdmin) { %>
+                                <button
+                                    class="btn btn-sm btn-outline-danger"
+                                    type="button"
+                                    data-password-change
+                                    data-password-change-url="/admin/users/<%= account.id %>/password-change/request"
+                                    data-password-change-target="<%= account.name %>"
+                                    aria-label="Cambiar contraseña de <%= account.name %>">
+                                    Cambiar contraseña
+                                </button>
+                                <% } %>
                                 <button
                                     class="btn btn-sm btn-outline-primary"
                                     type="button"
@@ -191,14 +203,26 @@
     </div>
 </div>
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<%- include('partials/password-change-modal') %>
 <script>
 (() => {
     const form = document.getElementById('editUserForm');
     const roleError = document.getElementById('editRoleError');
+    const feedback = document.getElementById('userUpdateFeedback');
     const roleInputs = [...document.querySelectorAll('.edit-user-role')];
+    const submitButton = form.querySelector('button[type="submit"]');
+    const csrfToken = form.querySelector('input[name="_csrf"]').value;
+    let activeEditButton = null;
+
+    const showFeedback = (message, isError = false) => {
+        feedback.className = `alert ${isError ? 'alert-danger' : 'alert-success'}`;
+        feedback.setAttribute('role', isError ? 'alert' : 'status');
+        feedback.textContent = message;
+    };
 
     document.querySelectorAll('[data-edit-user]').forEach((button) => {
         button.addEventListener('click', () => {
+            activeEditButton = button;
             form.action = `/admin/users/${encodeURIComponent(button.dataset.userId)}/update`;
             form.elements.name.value = button.dataset.userName;
             form.elements.email.value = button.dataset.userEmail;
@@ -211,10 +235,62 @@
         });
     });
 
-    form.addEventListener('submit', (event) => {
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
         const hasSelectedRole = roleInputs.some((input) => input.checked);
         roleError.hidden = hasSelectedRole;
-        if (!hasSelectedRole) event.preventDefault();
+        if (!hasSelectedRole) return;
+
+        submitButton.disabled = true;
+        try {
+            const response = await fetch(form.action, {
+                method: 'PATCH',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfToken,
+                },
+                body: JSON.stringify({
+                    name: form.elements.name.value,
+                    email: form.elements.email.value,
+                    active: form.elements.active.value,
+                    role_keys: roleInputs.filter((input) => input.checked).map((input) => input.value),
+                }),
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                const errorMessages = {
+                    csrf_token_mismatch: 'La solicitud expiró. Actualiza la página e inténtalo de nuevo.',
+                    email_conflict: 'Ese correo ya está asociado a otra cuenta.',
+                    invalid_user_data: 'Revisa el nombre, correo, estado y perfiles seleccionados.',
+                    role_constraint_mismatch: 'Los perfiles configurados aún no están habilitados en la base de datos. Aplica las migraciones de SIGEMED y vuelve a intentarlo.',
+                    session_expired: 'La sesión expiró. Inicia sesión nuevamente.',
+                    update_failed: 'No se pudo guardar el cambio. Inténtalo de nuevo.',
+                    user_not_found: 'La cuenta ya no existe o fue eliminada.',
+                };
+                throw new Error(errorMessages[result.error] || 'No se pudo actualizar la cuenta.');
+            }
+            const account = result.account;
+            const row = activeEditButton.closest('tr');
+            const cells = row.querySelectorAll('td');
+            cells[0].textContent = account.name;
+            cells[1].textContent = account.email;
+            cells[2].textContent = account.roles;
+            const statusBadge = cells[3].querySelector('.badge');
+            statusBadge.textContent = account.active ? 'Activa' : 'Inactiva';
+            statusBadge.className = `badge ${account.active ? 'text-bg-success' : 'text-bg-secondary'}`;
+            activeEditButton.dataset.userName = account.name;
+            activeEditButton.dataset.userEmail = account.email;
+            activeEditButton.dataset.userActive = account.active;
+            activeEditButton.dataset.userRoleKeys = JSON.stringify(account.roleKeys);
+
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('editUserModal')).hide();
+            showFeedback('La cuenta se actualizó correctamente.');
+        } catch (error) {
+            showFeedback(error.message || 'No se pudo actualizar la cuenta. Inténtalo de nuevo.', true);
+        } finally {
+            submitButton.disabled = false;
+        }
     });
 })();
 </script>

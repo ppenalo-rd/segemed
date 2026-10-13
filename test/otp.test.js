@@ -5,7 +5,7 @@ const {
   hashOtp,
   otpMatches,
 } = require('../services/otp');
-const { createEmailTransport, sendLoginOtp } = require('../services/email');
+const { createEmailTransport, sendLoginOtp, sendPasswordChangeOtp } = require('../services/email');
 const { startSmtpSink } = require('../test-support/smtp-sink');
 
 test('genera códigos OTP numéricos de seis dígitos incluyendo ceros iniciales', () => {
@@ -52,6 +52,30 @@ test('envía el código y escapa el nombre en el correo HTML', async () => {
     );
     const message = await smtpSink.nextMessage();
     assert.match(message, /001204/);
+    assert.match(message, /&lt;Paciente&gt;/);
+    assert.doesNotMatch(message, /<p>Hola <Paciente>/);
+  } finally {
+    await smtpSink.close();
+  }
+});
+
+test('envía el OTP de cambio de contraseña con un aviso específico y nombre escapado', async () => {
+  const smtpSink = await startSmtpSink();
+  try {
+    await sendPasswordChangeOtp(
+      { to: 'user@example.test', name: '<Paciente>', code: '008314' },
+      {
+        SMTP_HOST: '127.0.0.1',
+        SMTP_PORT: String(smtpSink.port),
+        SMTP_REQUIRE_TLS: 'false',
+        SMTP_USER: 'test-user',
+        SMTP_PASSWORD: 'test-password',
+        SMTP_FROM: 'SIGEMED Tests <no-reply@example.test>',
+      }
+    );
+    const message = await smtpSink.nextMessage();
+    assert.match(message, /contrase=C3=B1a/i);
+    assert.match(message, /008314/);
     assert.match(message, /&lt;Paciente&gt;/);
     assert.doesNotMatch(message, /<p>Hola <Paciente>/);
   } finally {

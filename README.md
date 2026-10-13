@@ -30,7 +30,7 @@ La base debe contar con el esquema inicial antes de aplicar las migraciones vers
 npm run db:migrate
 ```
 
-El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`. La migración `009_email_otp_authentication.sql` crea la tabla de desafíos OTP.
+El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`. La migración `009_email_otp_authentication.sql` crea la tabla de desafíos OTP. La migración `011_user_role_check.sql` mantiene compatibles los valores históricos de `users.role` y habilita las claves de rol normalizadas usadas por la aplicación. La migración `012_password_change_otp.sql` crea los desafíos aislados para verificar cambios de contraseña.
 
 ### Autenticación de dos factores por correo
 
@@ -39,6 +39,8 @@ Después de validar el correo y la contraseña, SIGEMED envía un código OTP de
 Las sesiones autenticadas se extienden hasta ocho horas desde la última actividad. Mientras haya interacción, las pantallas autenticadas renuevan la sesión cada cinco minutos; tras diez minutos sin actividad, dejan de hacerlo. Si la sesión vence, la aplicación devuelve al ingreso para autenticarse nuevamente, sin desactivar la protección CSRF.
 
 Configura el SMTP de tu proveedor con los valores indicados en `.env.example`; el puerto 587 usa STARTTLS y el 465 usa TLS implícito. Mantén `SMTP_REQUIRE_TLS=true` salvo en pruebas SMTP locales aisladas. No se habilita una sesión de usuario si el correo no puede enviarse. No se almacena `otp_code` en texto claro: `email_otp_challenges.otp_hash` guarda un HMAC del código, y la expiración, reenvío e intentos se controlan en la base de datos. `is_2fa_verified` se mantiene en la sesión autenticada (no como estado global de `users`), evitando que la verificación de una sesión autorice otras sesiones concurrentes. Se auditan los éxitos y fallos de autenticación sin registrar el código.
+
+El cambio de contraseña propio está disponible en «Mi perfil» y el restablecimiento administrativo en Usuarios y accesos y en el directorio de médicos vinculados. En todos los casos se exige OTP enviado al correo de la cuenta afectada; la solicitud guarda solo el hash bcrypt de la nueva clave y un HMAC del OTP en `password_change_challenges`. El código vence en cinco minutos, permite hasta cinco intentos y tiene una espera de 60 segundos entre solicitudes. Las contraseñas requieren 12 caracteres, mayúscula, minúscula y número. Al cambiar la clave se revocan las sesiones de la cuenta y se registra el evento en auditoría. Aplica `npm run db:migrate` para crear la tabla de desafíos.
 
 ### Moneda y facturación
 

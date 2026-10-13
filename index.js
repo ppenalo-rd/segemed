@@ -6,6 +6,7 @@ const session = require('express-session');
 const connectPgSimple = require('connect-pg-simple');
 const helmet = require('helmet');
 const { rateLimit } = require('express-rate-limit');
+const bcrypt = require('bcryptjs');
 const db = require('./db');
 const PDFDocument = require('pdfkit'); 
 const {
@@ -23,7 +24,8 @@ const {
   hashOtp,
   otpMatches,
 } = require('./services/otp');
-const { sendLoginOtp } = require('./services/email');
+const { sendLoginOtp, sendPasswordChangeOtp } = require('./services/email');
+const { validateNewPassword } = require('./services/password-policy');
 const booking = require('./services/booking');
 const { mapAppointmentsToCalendarEvents } = require('./services/appointment-calendar');
 const doctorSchedules = require('./services/doctor-schedules');
@@ -101,7 +103,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  if (req.method !== 'POST') return next();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
   const token = req.body?._csrf || req.get('x-csrf-token');
   const submittedToken = Buffer.from(String(token || ''));
   const sessionToken = Buffer.from(req.session.csrfToken);
@@ -142,6 +144,20 @@ const otpResendRateLimit = rateLimit({
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: 'Se alcanzó el límite para reenviar códigos. Inténtalo más tarde.',
+});
+const passwordChangeRequestRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
+});
+const passwordChangeVerifyRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
 });
 
 function regenerateSession(req) {
@@ -315,7 +331,7 @@ app.get('/auth/verify-otp', requirePendingOtp, async (req, res, next) => {
 });
 
 app.post('/auth/verify-otp', otpVerifyRateLimit, requirePendingOtp, async (req, res, next) => {
-  const code = typeof req.body.otp === 'string' ? req.body.otp : '';
+  const code = typeof req.body?.otp === 'string' ? req.body.otp : '';
   if (!/^\d{6}$/.test(code)) {
     return res.redirect('/auth/verify-otp?error=invalid');
   }
@@ -566,6 +582,274 @@ app.get('/dashboard', (req, res) => {
   res.render('dashboard', { modules });
 });
 
+// Renders the signed-in user's account settings without exposing password data.
+app.get('/account/profile', async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      'SELECT id, name, email FROM users WHERE id = $1 AND active = TRUE',
+      [req.session.user.id]
+    );
+    if (!rows.length) return res.status(404).send('No se encontró la cuenta activa.');
+    res.render('account_profile', { account: rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Creates an expiring OTP challenge while storing only the bcrypt hash of the proposed password.
+async function startPasswordChange(req, res, targetUserId, next) {
+  res.set('Cache-Control', 'no-store');
+  const passwordError = validateNewPassword(req.body?.new_password, req.body?.confirm_password);
+  if (passwordError) return res.status(400).json({ error: 'invalid_password', message: passwordError });
+
+  const newPasswordHash = await bcrypt.hash(req.body.new_password, 12);
+  const challengeId = crypto.randomUUID();
+  const code = generateOtp();
+  const requesterUserId = Number(req.session.user.id);
+  const targetId = Number(targetUserId);
+  const client = await db.connect();
+  let recipient;
+  let challengeExpiresAt;
+  try {
+    await client.query('BEGIN');
+    const userResult = await client.query(
+      'SELECT id, name, email FROM users WHERE id = $1 FOR UPDATE',
+      [targetId]
+    );
+    if (!userResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'user_not_found' });
+    }
+    recipient = userResult.rows[0];
+    if (!recipient.email) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'email_missing' });
+    }
+
+    const existingChallenge = await client.query(
+      `SELECT resend_after > CURRENT_TIMESTAMP AS is_cooling_down
+       FROM password_change_challenges
+       WHERE user_id = $1
+       FOR UPDATE`,
+      [targetId]
+    );
+    if (existingChallenge.rows[0]?.is_cooling_down) {
+      await client.query('ROLLBACK');
+      return res.status(429).json({ error: 'otp_wait' });
+    }
+
+    const challengeResult = await client.query(
+      `INSERT INTO password_change_challenges
+         (challenge_id, user_id, requested_by_user_id, otp_hash, new_password_hash,
+          expires_at, attempts, sent_at, resend_after, created_at)
+       VALUES ($1, $2, $3, $4, $5,
+               CURRENT_TIMESTAMP + ($6 * INTERVAL '1 minute'), 0, CURRENT_TIMESTAMP,
+               CURRENT_TIMESTAMP + ($7 * INTERVAL '1 second'), CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) DO UPDATE
+       SET challenge_id = EXCLUDED.challenge_id,
+           requested_by_user_id = EXCLUDED.requested_by_user_id,
+           otp_hash = EXCLUDED.otp_hash,
+           new_password_hash = EXCLUDED.new_password_hash,
+           expires_at = EXCLUDED.expires_at,
+           attempts = 0,
+           sent_at = EXCLUDED.sent_at,
+           resend_after = EXCLUDED.resend_after,
+           created_at = CURRENT_TIMESTAMP
+       RETURNING expires_at`,
+      [
+        challengeId,
+        targetId,
+        requesterUserId,
+        hashOtp(code, sessionSecret),
+        newPasswordHash,
+        OTP_TTL_MINUTES,
+        OTP_RESEND_COOLDOWN_SECONDS,
+      ]
+    );
+    challengeExpiresAt = new Date(challengeResult.rows[0].expires_at);
+    await recordAccessEvent(client, req, {
+      eventType: 'user_password_change_requested',
+      resourceType: 'user',
+      resourceId: targetId,
+      userId: requesterUserId,
+      details: { initiatedByAdmin: requesterUserId !== targetId },
+    });
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir solicitud de cambio de contraseña:', rollbackError.message);
+    });
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  try {
+    await sendPasswordChangeOtp({
+      to: recipient.email,
+      name: recipient.name,
+      code,
+      expiresMinutes: OTP_TTL_MINUTES,
+    });
+  } catch (emailError) {
+    try {
+      await db.query(
+        'DELETE FROM password_change_challenges WHERE challenge_id = $1',
+        [challengeId]
+      );
+      await recordAccessEvent(db, req, {
+        eventType: 'user_password_change_email_failed',
+        resourceType: 'user',
+        resourceId: targetId,
+        userId: requesterUserId,
+        details: { initiatedByAdmin: requesterUserId !== targetId },
+      });
+    } catch (cleanupError) {
+      console.error('No se pudo limpiar el desafío de cambio de contraseña:', cleanupError.message);
+    }
+    console.error('No se pudo enviar el OTP para cambio de contraseña:', emailError.message);
+    return res.status(503).json({ error: 'email_delivery_failed' });
+  }
+
+  req.session.passwordChangeChallengeId = challengeId;
+  req.session.passwordChangeTargetUserId = targetId;
+  res.set('Cache-Control', 'no-store');
+  return res.json({
+    maskedEmail: maskEmail(recipient.email),
+    expiresAt: challengeExpiresAt.toISOString(),
+  });
+}
+
+// Verifies a session-bound OTP and applies the pending password hash in the same transaction.
+async function verifyPasswordChange(req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  const challengeId = req.session.passwordChangeChallengeId;
+  const targetId = Number(req.session.passwordChangeTargetUserId);
+  const requesterUserId = Number(req.session.user.id);
+  const code = typeof req.body.otp === 'string' ? req.body.otp : '';
+  if (!challengeId || !Number.isSafeInteger(targetId) || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({ error: 'invalid_otp' });
+  }
+
+  const client = await db.connect();
+  let failure = null;
+  let mustReauthenticate = false;
+  try {
+    await client.query('BEGIN');
+    const challengeResult = await client.query(
+      `SELECT c.otp_hash, c.new_password_hash, c.attempts,
+              c.expires_at > CURRENT_TIMESTAMP AS is_unexpired
+       FROM password_change_challenges c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.challenge_id = $1
+         AND c.user_id = $2
+         AND c.requested_by_user_id = $3
+       FOR UPDATE OF c, u`,
+      [challengeId, targetId, requesterUserId]
+    );
+    if (!challengeResult.rowCount) {
+      failure = 'challenge_missing';
+    } else {
+      const challenge = challengeResult.rows[0];
+      if (!challenge.is_unexpired) {
+        await client.query('DELETE FROM password_change_challenges WHERE challenge_id = $1', [challengeId]);
+        failure = 'otp_expired';
+      } else if (Number(challenge.attempts) >= OTP_MAX_ATTEMPTS) {
+        await client.query('DELETE FROM password_change_challenges WHERE challenge_id = $1', [challengeId]);
+        failure = 'otp_locked';
+      } else if (!otpMatches(code, challenge.otp_hash, sessionSecret)) {
+        const attemptResult = await client.query(
+          `UPDATE password_change_challenges
+           SET attempts = attempts + 1
+           WHERE challenge_id = $1
+           RETURNING attempts`,
+          [challengeId]
+        );
+        if (Number(attemptResult.rows[0].attempts) >= OTP_MAX_ATTEMPTS) {
+          await client.query('DELETE FROM password_change_challenges WHERE challenge_id = $1', [challengeId]);
+          failure = 'otp_locked';
+        } else {
+          failure = 'invalid_otp';
+        }
+      } else {
+        await client.query(
+          'UPDATE users SET password_hash = $1 WHERE id = $2',
+          [challenge.new_password_hash, targetId]
+        );
+        await client.query(
+          `DELETE FROM session
+           WHERE sess->'user'->>'id' = $1`,
+          [String(targetId)]
+        );
+        await client.query('DELETE FROM password_change_challenges WHERE challenge_id = $1', [challengeId]);
+        await recordAccessEvent(client, req, {
+          eventType: 'user_password_changed',
+          resourceType: 'user',
+          resourceId: targetId,
+          userId: requesterUserId,
+          details: { initiatedByAdmin: requesterUserId !== targetId, verification: 'email_otp' },
+        });
+        mustReauthenticate = requesterUserId === targetId;
+      }
+    }
+
+    if (failure && failure !== 'challenge_missing') {
+      await recordAccessEvent(client, req, {
+        eventType: 'user_password_change_otp_failed',
+        resourceType: 'user',
+        resourceId: targetId,
+        userId: requesterUserId,
+        details: { reason: failure },
+      });
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir cambio de contraseña:', rollbackError.message);
+    });
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  if (failure) {
+    if (failure !== 'invalid_otp') {
+      delete req.session.passwordChangeChallengeId;
+      delete req.session.passwordChangeTargetUserId;
+    }
+    const status = failure === 'invalid_otp' ? 400 : 410;
+    return res.status(status).json({ error: failure });
+  }
+
+  delete req.session.passwordChangeChallengeId;
+  delete req.session.passwordChangeTargetUserId;
+  if (mustReauthenticate) {
+    await destroySession(req);
+    res.clearCookie('sigemed.sid');
+  }
+  res.set('Cache-Control', 'no-store');
+  return res.json({ success: true, mustReauthenticate });
+}
+
+app.post(
+  '/account/password-change/request',
+  passwordChangeRequestRateLimit,
+  (req, res, next) => startPasswordChange(req, res, req.session.user.id, next)
+);
+app.post(
+  '/admin/users/:id/password-change/request',
+  requireRole('system_admin'),
+  passwordChangeRequestRateLimit,
+  (req, res, next) => {
+    if (!/^[1-9]\d*$/.test(String(req.params.id))
+        || !Number.isSafeInteger(Number(req.params.id))) {
+      return res.status(400).json({ error: 'user_not_found' });
+    }
+    return startPasswordChange(req, res, req.params.id, next);
+  }
+);
+app.post('/account/password-change/verify', passwordChangeVerifyRateLimit, verifyPasswordChange);
+
 app.use('/agenda', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'));
 app.use('/appointments', requireRole('system_admin', 'admissions', 'audit_security'));
 app.use('/api/doctor-availability', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'));
@@ -646,9 +930,11 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
         ? 'No se pudo vincular la cuenta. Verifica que la cuenta tenga el perfil Médico y que ambos registros estén disponibles.'
         : (req.query.error === 'email'
           ? 'Ese correo ya está asociado a otra cuenta.'
-          : (req.query.error === 'invalid'
-            ? 'Revisa el nombre, correo, estado y perfiles seleccionados.'
-            : (req.query.error ? 'No se pudo guardar el cambio. Verifica los datos y tus permisos.' : null))),
+          : (req.query.error === 'role'
+            ? 'Los perfiles configurados aún no están habilitados en la base de datos. Aplica las migraciones de SIGEMED y vuelve a intentarlo.'
+            : (req.query.error === 'invalid'
+              ? 'Revisa el nombre, correo, estado y perfiles seleccionados.'
+              : (req.query.error ? 'No se pudo guardar el cambio. Verifica los datos y tus permisos.' : null)))),
     });
   } catch (error) {
     console.error('Error al cargar administración de usuarios:', error.message);
@@ -657,7 +943,6 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
 });
 
 app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (req, res) => {
-  const bcrypt = require('bcryptjs');
   const { name, role_key: roleKey, doctor_id: doctorId } = req.body;
   const fullName = typeof name === 'string' ? name.trim() : '';
   const email = String(req.body.email || '').trim().toLowerCase();
@@ -723,7 +1008,12 @@ app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (r
 });
 
 // Updates account data and authorized roles atomically, then revokes sessions if access changed.
-app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), async (req, res) => {
+const updateUserAccount = async (req, res) => {
+  const wantsJson = req.accepts('json');
+  const respondError = (status, errorCode, redirectCode) => {
+    if (wantsJson) return res.status(status).json({ error: errorCode });
+    return res.redirect(`/admin/users?error=${redirectCode}`);
+  };
   const userId = String(req.params.id || '');
   const fullName = typeof req.body.name === 'string' ? req.body.name.trim() : '';
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
@@ -735,6 +1025,7 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
   const actorRoles = req.session.user.roles || [];
 
   if (!/^[1-9]\d*$/.test(userId)
+      || !Number.isSafeInteger(Number(userId))
       || !fullName
       || fullName.length > 120
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -743,7 +1034,7 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
       || submittedRoleKeys.some((roleKey) => typeof roleKey !== 'string')
       || selectedRoleKeys.length === 0
       || selectedRoleKeys.some((roleKey) => !canAssignRole(actorRoles, roleKey))) {
-    return res.redirect('/admin/users?error=invalid');
+    return respondError(400, 'invalid_user_data', 'invalid');
   }
 
   const client = await db.connect();
@@ -755,7 +1046,7 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
     );
     if (!accountResult.rowCount) {
       await client.query('ROLLBACK');
-      return res.redirect('/admin/users?error=invalid');
+      return respondError(404, 'user_not_found', 'invalid');
     }
 
     const existingRolesResult = await client.query(
@@ -780,13 +1071,13 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
           || !finalRoleKeys.some((roleKey) => actorRoles.includes(roleKey)
             && ['system_admin', 'audit_security'].includes(roleKey)))) {
       await client.query('ROLLBACK');
-      return res.redirect('/admin/users?error=invalid');
+      return respondError(400, 'invalid_user_data', 'invalid');
     }
     if (existingRoleKeys.includes('system_admin')
         && !actorRoles.includes('system_admin')
         && activeValue !== 'true') {
       await client.query('ROLLBACK');
-      return res.redirect('/admin/users?error=invalid');
+      return respondError(400, 'invalid_user_data', 'invalid');
     }
 
     const roleResult = await client.query(
@@ -797,7 +1088,7 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
     );
     if (roleResult.rowCount !== selectedRoleKeys.length) {
       await client.query('ROLLBACK');
-      return res.redirect('/admin/users?error=invalid');
+      return respondError(400, 'invalid_user_data', 'invalid');
     }
 
     await client.query(
@@ -835,6 +1126,16 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
       );
     }
 
+    const updatedAccountResult = await client.query(
+      `SELECT u.name, u.email, u.active,
+              COALESCE(string_agg(r.name, ', ' ORDER BY r.name), 'Sin perfil') AS roles
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id
+       LEFT JOIN roles r ON r.id = ur.role_id
+       WHERE u.id = $1
+       GROUP BY u.id`,
+      [Number(userId)]
+    );
     await recordAccessEvent(client, req, {
       eventType: 'user_account_updated',
       resourceType: 'user',
@@ -846,20 +1147,35 @@ app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'
       },
     });
     await client.query('COMMIT');
+    if (wantsJson) {
+      return res.json({
+        account: {
+          ...updatedAccountResult.rows[0],
+          roleKeys: finalRoleKeys,
+        },
+      });
+    }
     res.redirect('/admin/users?updated=1');
   } catch (error) {
     await client.query('ROLLBACK').catch((rollbackError) => {
       console.error('Error al revertir actualización de cuenta:', rollbackError.message);
     });
     if (error.code === '23505') {
-      return res.redirect('/admin/users?error=email');
+      return respondError(409, 'email_conflict', 'email');
+    }
+    if (error.code === '23514' && error.constraint === 'users_role_check') {
+      console.error('La restricción users_role_check no permite las claves de rol de SIGEMED. Aplica las migraciones pendientes.');
+      return respondError(500, 'role_constraint_mismatch', 'role');
     }
     console.error('Error al actualizar cuenta de usuario:', error.message);
-    res.redirect('/admin/users?error=1');
+    return respondError(500, 'update_failed', '1');
   } finally {
     client.release();
   }
-});
+};
+
+app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), updateUserAccount);
+app.patch('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), updateUserAccount);
 
 app.post('/admin/users/link-doctor', requireRole('system_admin', 'audit_security'), async (req, res) => {
   const doctorId = String(req.body.doctor_id || '');
@@ -919,7 +1235,17 @@ app.post('/admin/users/link-doctor', requireRole('system_admin', 'audit_security
 app.get('/pacientes', async (req, res) => {
   try {
     const { rows } = await db.query('SELECT * FROM patients ORDER BY created_at DESC');
-    res.render('patients', { pacientes: rows });
+    res.render('patients', {
+      pacientes: rows,
+      message: req.query.updated ? 'Los datos del paciente se actualizaron correctamente.' : null,
+      error: req.query.error === 'duplicate'
+        ? 'Ya existe un paciente registrado con ese documento.'
+        : (req.query.error === 'invalid'
+          ? 'Revisa el documento, nombres, apellidos, fecha de nacimiento y correo.'
+          : (req.query.error === 'not-found'
+            ? 'No se encontró el paciente que intentas modificar.'
+            : (req.query.error ? 'No se pudo actualizar el paciente. Inténtalo de nuevo.' : null))),
+    });
   } catch (err) {
     console.error('Error al cargar la vista de pacientes:', err.message);
     res.status(500).send('Error al cargar la interfaz de pacientes');
@@ -986,17 +1312,85 @@ app.post('/patients/create', async (req, res) => {
   }
 });
 
-// RUTA POST: Actualizar paciente
+// Actualiza los datos demográficos del paciente de forma transaccional y auditable.
 app.post('/patients/update/:id', async (req, res) => {
-  const { id } = req.params;
-  const { dni_document, first_name, last_name, birth_date, gender, phone, email } = req.body;
+  const id = String(req.params.id || '');
+  const document = typeof req.body.dni_document === 'string' ? req.body.dni_document.trim() : '';
+  const firstName = typeof req.body.first_name === 'string' ? req.body.first_name.trim() : '';
+  const lastName = typeof req.body.last_name === 'string' ? req.body.last_name.trim() : '';
+  const birthDate = typeof req.body.birth_date === 'string' ? req.body.birth_date.trim() : '';
+  const gender = typeof req.body.gender === 'string' ? req.body.gender.trim() : '';
+  const phone = typeof req.body.phone === 'string' ? req.body.phone.trim() : '';
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const validBirthDate = !birthDate
+    || (/^\d{4}-\d{2}-\d{2}$/.test(birthDate)
+      && !Number.isNaN(Date.parse(`${birthDate}T00:00:00Z`))
+      && new Date(`${birthDate}T00:00:00Z`).toISOString().slice(0, 10) === birthDate);
+
+  if (!/^[1-9]\d*$/.test(id)
+      || !Number.isSafeInteger(Number(id))
+      || document.length > 50
+      || !firstName
+      || firstName.length > 100
+      || !lastName
+      || lastName.length > 100
+      || !validBirthDate
+      || gender.length > 20
+      || phone.length > 50
+      || email.length > 150
+      || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    return res.redirect('/pacientes?error=invalid');
+  }
+
+  const client = await db.connect();
   try {
-    const query = `UPDATE patients SET dni_document = $1, first_name = $2, last_name = $3, birth_date = $4, gender = $5, phone = $6, email = $7 WHERE id = $8;`;
-    const values = [dni_document, first_name, last_name, birth_date, gender, phone, email || null, id];
-    await db.query(query, values);
-    res.redirect('/pacientes');
-  } catch (err) {
-    res.status(500).send('Error interno al actualizar el paciente.');
+    await client.query('BEGIN');
+    const patientResult = await client.query(
+      'SELECT document_type FROM patients WHERE id = $1 FOR UPDATE',
+      [Number(id)]
+    );
+    if (!patientResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.redirect('/pacientes?error=not-found');
+    }
+    if (patientResult.rows[0].document_type !== 'none' && !document) {
+      await client.query('ROLLBACK');
+      return res.redirect('/pacientes?error=invalid');
+    }
+
+    const updatedPatientResult = await client.query(
+      `UPDATE patients
+       SET dni_document = $1, first_name = $2, last_name = $3, birth_date = $4,
+           gender = $5, phone = $6, email = $7
+       WHERE id = $8
+       RETURNING id`,
+      [document || null, firstName, lastName, birthDate || null, gender || null, phone || null, email || null, Number(id)]
+    );
+    if (!updatedPatientResult.rowCount) {
+       await client.query('ROLLBACK');
+       return res.redirect('/pacientes?error=not-found');
+    }
+    await recordAccessEvent(client, req, {
+      eventType: 'patient_demographics_updated',
+      resourceType: 'patient',
+      resourceId: id,
+      patientId: Number(id),
+      details: {
+        fieldsUpdated: ['dni_document', 'first_name', 'last_name', 'birth_date', 'gender', 'phone', 'email'],
+      },
+    });
+    await client.query('COMMIT');
+    return res.redirect('/pacientes?updated=1');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir actualización de paciente:', rollbackError.message);
+    });
+    if (error.code === '23505') return res.redirect('/pacientes?error=duplicate');
+    if (error.code === '23514') return res.redirect('/pacientes?error=invalid');
+    console.error('Error al actualizar datos del paciente:', error.message);
+    return res.redirect('/pacientes?error=save');
+  } finally {
+    client.release();
   }
 });
 
@@ -2350,8 +2744,12 @@ app.get('/admin/doctors', requireRole('system_admin', 'admissions'), async (req,
     const [doctorsResult, specialtiesResult] = await Promise.all([
       db.query(`
         SELECT d.*,
+               CASE WHEN $1::boolean THEN account.id END AS account_user_id,
+               CASE WHEN $1::boolean THEN account.name END AS account_user_name,
                COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
         FROM doctors d
+        LEFT JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
+        LEFT JOIN users account ON account.id = dua.user_id
         LEFT JOIN LATERAL (
           SELECT s.name
           FROM doctor_specialties ds
@@ -2361,7 +2759,7 @@ app.get('/admin/doctors', requireRole('system_admin', 'admissions'), async (req,
           LIMIT 1
         ) specialty ON TRUE
         ORDER BY d.name ASC
-      `),
+      `, [req.session.user.roles.includes('system_admin')]),
       db.query('SELECT id, name, active FROM specialties WHERE active = TRUE ORDER BY name'),
     ]);
     res.render('doctors', {
@@ -2398,8 +2796,12 @@ app.get('/admin/doctors/:id/edit', requireRole('system_admin', 'admissions'), as
       `, [req.params.id]),
       db.query(`
         SELECT d.*,
+               CASE WHEN $1::boolean THEN account.id END AS account_user_id,
+               CASE WHEN $1::boolean THEN account.name END AS account_user_name,
                COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
         FROM doctors d
+        LEFT JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
+        LEFT JOIN users account ON account.id = dua.user_id
         LEFT JOIN LATERAL (
           SELECT s.name
           FROM doctor_specialties ds
@@ -2409,7 +2811,7 @@ app.get('/admin/doctors/:id/edit', requireRole('system_admin', 'admissions'), as
           LIMIT 1
         ) specialty ON TRUE
         ORDER BY d.name ASC
-      `),
+      `, [req.session.user.roles.includes('system_admin')]),
       db.query(`
         SELECT id, name, active
         FROM specialties

@@ -3,6 +3,7 @@
         <a class="navbar-brand fw-bold text-primary" href="/dashboard">SIGEMED</a>
         <div class="d-flex flex-wrap align-items-center gap-2">
             <a class="btn btn-sm btn-outline-dark" href="/dashboard">Menú principal</a>
+            <a class="btn btn-sm btn-outline-primary" href="/account/profile">Mi perfil</a>
             <a class="btn btn-sm btn-outline-primary" href="/agenda">Agenda</a>
             <a class="btn btn-sm btn-outline-primary" href="/pacientes">Pacientes</a>
             <% if (currentUser && currentUser.roles.some((role) => ['system_admin', 'audit_security', 'admissions', 'doctor', 'nurse'].includes(role))) { %>

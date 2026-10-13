@@ -170,6 +170,17 @@
                                         <a href="/admin/doctors/<%= doc.id %>/schedules" class="btn btn-sm btn-outline-primary fw-bold">
                                             📅 Configurar Horario
                                         </a>
+                                        <% if (currentUser.roles.includes('system_admin') && doc.account_user_id) { %>
+                                            <button
+                                                class="btn btn-sm btn-outline-danger fw-bold mt-1"
+                                                type="button"
+                                                data-password-change
+                                                data-password-change-url="/admin/users/<%= doc.account_user_id %>/password-change/request"
+                                                data-password-change-target="<%= doc.account_user_name %>"
+                                                aria-label="Cambiar contraseña de la cuenta de <%= doc.account_user_name %>">
+                                                Cambiar clave de acceso
+                                            </button>
+                                        <% } %>
                                     </td>
                                 </tr>
                             <% }) %>
@@ -188,5 +199,6 @@
 </div>
 
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<%- include('partials/password-change-modal') %>
 </body>
 </html>
