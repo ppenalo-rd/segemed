@@ -78,6 +78,7 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
       SESSION_SECRET: crypto.randomBytes(48).toString('hex'),
       SMTP_HOST: '127.0.0.1',
       SMTP_PORT: String(smtpSink.port),
+      SMTP_SECURE: 'false',
       SMTP_REQUIRE_TLS: 'false',
       SMTP_USER: 'test-user',
       SMTP_PASSWORD: 'test-password',
@@ -176,7 +177,7 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ email, password, _csrf: csrfToken }),
       });
-      assert.equal(loginResponse.status, 302);
+      assert.equal(loginResponse.status, 302, serverOutput);
       assert.equal(loginResponse.headers.get('location'), '/auth/verify-otp');
 
       const otpPage = await request(actor.key, '/auth/verify-otp');
@@ -201,9 +202,23 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
       const visibleModules = [...dashboardHtml.matchAll(/data-module="([^"]+)"/g)].map((match) => match[1]);
       assert.deepEqual(visibleModules, actor.expected, `módulos visibles para ${actor.role}`);
 
+      const heartbeatResponse = await request(actor.key, '/auth/session/heartbeat');
+      assert.equal(heartbeatResponse.status, 200);
+      assert.match(heartbeatResponse.headers.get('cache-control') || '', /no-store/);
+      assert.equal(typeof (await heartbeatResponse.json()).csrfToken, 'string');
+
       const existingSessionLoginPage = await request(actor.key, '/login', { redirect: 'manual' });
       assert.equal(existingSessionLoginPage.status, 302);
       assert.equal(existingSessionLoginPage.headers.get('location'), '/dashboard');
+
+      const expiredSessionResponse = await fetch(`${baseUrl}/appointments`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ _csrf: 'stale-session-token' }),
+      });
+      assert.equal(expiredSessionResponse.status, 303);
+      assert.equal(expiredSessionResponse.headers.get('location'), '/login?error=session');
     }
   } catch (error) {
     failure = error;

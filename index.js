@@ -85,6 +85,7 @@ app.use(session({
   name: 'sigemed.sid',
   resave: false,
   saveUninitialized: false,
+  rolling: true,
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
@@ -106,6 +107,13 @@ app.use((req, res, next) => {
   const sessionToken = Buffer.from(req.session.csrfToken);
   if (submittedToken.length !== sessionToken.length
       || !crypto.timingSafeEqual(submittedToken, sessionToken)) {
+    if (!req.session.user
+        && !['/login', '/auth/verify-otp', '/auth/resend-otp', '/auth/cancel-otp'].includes(req.path)) {
+      if (req.get('x-csrf-token') || req.is('application/json')) {
+        return res.status(401).json({ error: 'session_expired' });
+      }
+      return res.redirect(303, '/login?error=session');
+    }
     return res.status(403).send('La solicitud expiró o no es válida. Actualiza la página e inténtalo de nuevo.');
   }
   next();
@@ -191,6 +199,8 @@ app.get('/login', async (req, res, next) => {
   res.render('login', {
     error: req.query.error === 'otp'
       ? 'La verificación expiró o superó el máximo de intentos. Inicia sesión nuevamente.'
+      : req.query.error === 'session'
+        ? 'Tu sesión expiró. Vuelve a iniciar sesión para continuar.'
       : null,
     returnTo: validReturnTo(req.query.returnTo),
   });
@@ -500,6 +510,10 @@ app.post('/logout', async (req, res, next) => {
 });
 
 app.use(requireAuthentication);
+app.get('/auth/session/heartbeat', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ csrfToken: req.session.csrfToken });
+});
 app.use((req, res, next) => {
   res.locals.currentUser = req.session.user;
   next();

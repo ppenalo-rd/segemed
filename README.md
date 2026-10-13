@@ -36,6 +36,8 @@ El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migracion
 
 Después de validar el correo y la contraseña, SIGEMED envía un código OTP de seis dígitos al correo registrado y requiere validarlo en `/auth/verify-otp` antes de crear la sesión autenticada. El código vence a los cinco minutos, admite hasta cinco intentos y puede reenviarse con una espera mínima de 60 segundos. Las rutas de verificación y reenvío además tienen límites de solicitudes por IP.
 
+Las sesiones autenticadas se extienden hasta ocho horas desde la última actividad. Mientras haya interacción, las pantallas autenticadas renuevan la sesión cada cinco minutos; tras diez minutos sin actividad, dejan de hacerlo. Si la sesión vence, la aplicación devuelve al ingreso para autenticarse nuevamente, sin desactivar la protección CSRF.
+
 Configura el SMTP de tu proveedor con los valores indicados en `.env.example`; el puerto 587 usa STARTTLS y el 465 usa TLS implícito. Mantén `SMTP_REQUIRE_TLS=true` salvo en pruebas SMTP locales aisladas. No se habilita una sesión de usuario si el correo no puede enviarse. No se almacena `otp_code` en texto claro: `email_otp_challenges.otp_hash` guarda un HMAC del código, y la expiración, reenvío e intentos se controlan en la base de datos. `is_2fa_verified` se mantiene en la sesión autenticada (no como estado global de `users`), evitando que la verificación de una sesión autorice otras sesiones concurrentes. Se auditan los éxitos y fallos de autenticación sin registrar el código.
 
 ### Moneda y facturación

@@ -26,3 +26,54 @@
         </div>
     </div>
 </nav>
+<script>
+(() => {
+    const refreshEveryMs = 5 * 60 * 1000;
+    const idleAfterMs = 10 * 60 * 1000;
+    let lastActivityAt = Date.now();
+    let lastRefreshAt = 0;
+    let refreshing = false;
+
+    async function refreshSession() {
+        if (refreshing) return;
+        refreshing = true;
+        lastRefreshAt = Date.now();
+        try {
+            const response = await fetch('/auth/session/heartbeat', {
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok || !contentType.includes('application/json')) {
+                window.location.assign('/login?error=session');
+                return;
+            }
+            const { csrfToken } = await response.json();
+            document.querySelectorAll('input[name="_csrf"]').forEach((input) => {
+                input.value = csrfToken;
+            });
+        } catch (error) {
+            console.error('No se pudo renovar la sesión de SIGEMED:', error);
+        } finally {
+            refreshing = false;
+        }
+    }
+
+    function markActivity() {
+        lastActivityAt = Date.now();
+        if (lastActivityAt - lastRefreshAt >= refreshEveryMs) {
+            void refreshSession();
+        }
+    }
+
+    ['pointerdown', 'keydown', 'input', 'touchstart'].forEach((eventName) => {
+        document.addEventListener(eventName, markActivity, { passive: true });
+    });
+    window.setInterval(() => {
+        const now = Date.now();
+        if (now - lastActivityAt < idleAfterMs && now - lastRefreshAt >= refreshEveryMs) {
+            void refreshSession();
+        }
+    }, 60 * 1000);
+})();
+</script>

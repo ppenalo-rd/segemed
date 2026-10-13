@@ -12,7 +12,7 @@
         <div class="card-body p-4 p-md-5">
             <p class="text-primary fw-semibold mb-1">SIGEMED · Atención ambulatoria</p>
             <h1 class="h3 mb-4">Iniciar sesión</h1>
-            <% if (error) { %>
+                    <% if (error) { %>
                 <div class="alert alert-danger" role="alert"><%= error %></div>
             <% } %>
             <form action="/login" method="POST">
