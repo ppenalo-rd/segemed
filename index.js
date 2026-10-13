@@ -109,10 +109,13 @@ app.use((req, res, next) => {
       || !crypto.timingSafeEqual(submittedToken, sessionToken)) {
     if (!req.session.user
         && !['/login', '/auth/verify-otp', '/auth/resend-otp', '/auth/cancel-otp'].includes(req.path)) {
-      if (req.get('x-csrf-token') || req.is('application/json')) {
+      if (req.get('x-csrf-token') || req.is('application/json') || req.accepts('json')) {
         return res.status(401).json({ error: 'session_expired' });
       }
       return res.redirect(303, '/login?error=session');
+    }
+    if (req.accepts('json')) {
+      return res.status(403).json({ error: 'csrf_token_mismatch' });
     }
     return res.status(403).send('La solicitud expiró o no es válida. Actualiza la página e inténtalo de nuevo.');
   }
@@ -616,7 +619,11 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
       `),
       db.query(`
         SELECT u.id, u.name, u.email, u.active,
-               string_agg(r.name, ', ' ORDER BY r.name) AS roles
+               string_agg(r.name, ', ' ORDER BY r.name) AS roles,
+               COALESCE(
+                 array_agg(DISTINCT r.role_key) FILTER (WHERE r.role_key IS NOT NULL),
+                 ARRAY[]::text[]
+               ) AS role_keys
         FROM users u
         LEFT JOIN user_roles ur ON ur.user_id = u.id
         LEFT JOIN roles r ON r.id = ur.role_id
@@ -629,12 +636,19 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
       doctors: doctorsResult.rows,
       doctorAccounts: doctorAccountsResult.rows,
       accounts: accountsResult.rows,
+      isSystemAdmin,
       message: req.query.linked
         ? 'La cuenta médica quedó vinculada al perfil profesional.'
-        : (req.query.created ? 'La cuenta fue creada correctamente.' : null),
+        : (req.query.updated
+          ? 'La cuenta se actualizó correctamente.'
+          : (req.query.created ? 'La cuenta fue creada correctamente.' : null)),
       error: req.query.error === 'link'
         ? 'No se pudo vincular la cuenta. Verifica que la cuenta tenga el perfil Médico y que ambos registros estén disponibles.'
-        : (req.query.error ? 'No se pudo crear la cuenta. Verifica que el correo no esté registrado.' : null),
+        : (req.query.error === 'email'
+          ? 'Ese correo ya está asociado a otra cuenta.'
+          : (req.query.error === 'invalid'
+            ? 'Revisa el nombre, correo, estado y perfiles seleccionados.'
+            : (req.query.error ? 'No se pudo guardar el cambio. Verifica los datos y tus permisos.' : null))),
     });
   } catch (error) {
     console.error('Error al cargar administración de usuarios:', error.message);
@@ -660,6 +674,14 @@ app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (r
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    const duplicateEmailResult = await client.query(
+      'SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1',
+      [email]
+    );
+    if (duplicateEmailResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.redirect('/admin/users?error=email');
+    }
     const roleResult = await client.query(
       'SELECT id FROM roles WHERE role_key = $1 AND active = TRUE',
       [roleKey]
@@ -687,8 +709,152 @@ app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (r
     await client.query('COMMIT');
     res.redirect('/admin/users?created=1');
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir la creación de cuenta:', rollbackError.message);
+    });
+    if (error.code === '23505' && error.constraint === 'users_email_key') {
+      return res.redirect('/admin/users?error=email');
+    }
     console.error('Error al crear cuenta de usuario:', error.message);
+    res.redirect('/admin/users?error=1');
+  } finally {
+    client.release();
+  }
+});
+
+// Updates account data and authorized roles atomically, then revokes sessions if access changed.
+app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), async (req, res) => {
+  const userId = String(req.params.id || '');
+  const fullName = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const activeValue = req.body.active;
+  const submittedRoleKeys = req.body.role_keys === undefined
+    ? []
+    : (Array.isArray(req.body.role_keys) ? req.body.role_keys : [req.body.role_keys]);
+  const selectedRoleKeys = [...new Set(submittedRoleKeys)];
+  const actorRoles = req.session.user.roles || [];
+
+  if (!/^[1-9]\d*$/.test(userId)
+      || !fullName
+      || fullName.length > 120
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      || email.length > 160
+      || !['true', 'false'].includes(activeValue)
+      || submittedRoleKeys.some((roleKey) => typeof roleKey !== 'string')
+      || selectedRoleKeys.length === 0
+      || selectedRoleKeys.some((roleKey) => !canAssignRole(actorRoles, roleKey))) {
+    return res.redirect('/admin/users?error=invalid');
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const accountResult = await client.query(
+      'SELECT id, active FROM users WHERE id = $1 FOR UPDATE',
+      [Number(userId)]
+    );
+    if (!accountResult.rowCount) {
+      await client.query('ROLLBACK');
+      return res.redirect('/admin/users?error=invalid');
+    }
+
+    const existingRolesResult = await client.query(
+      `SELECT r.id, r.role_key
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.user_id = $1
+       FOR UPDATE OF ur`,
+      [Number(userId)]
+    );
+    const preservedRoles = existingRolesResult.rows
+      .filter((role) => !canAssignRole(actorRoles, role.role_key))
+      .map((role) => role.role_key);
+    const editableRoleKeys = existingRolesResult.rows
+      .filter((role) => canAssignRole(actorRoles, role.role_key))
+      .map((role) => role.role_key);
+    const finalRoleKeys = [...new Set([...preservedRoles, ...selectedRoleKeys])];
+    const existingRoleKeys = existingRolesResult.rows.map((role) => role.role_key);
+
+    if (Number(userId) === Number(req.session.user.id)
+        && (activeValue !== 'true'
+          || !finalRoleKeys.some((roleKey) => actorRoles.includes(roleKey)
+            && ['system_admin', 'audit_security'].includes(roleKey)))) {
+      await client.query('ROLLBACK');
+      return res.redirect('/admin/users?error=invalid');
+    }
+    if (existingRoleKeys.includes('system_admin')
+        && !actorRoles.includes('system_admin')
+        && activeValue !== 'true') {
+      await client.query('ROLLBACK');
+      return res.redirect('/admin/users?error=invalid');
+    }
+
+    const roleResult = await client.query(
+      `SELECT id, role_key
+       FROM roles
+       WHERE active = TRUE AND role_key = ANY($1::text[])`,
+      [selectedRoleKeys]
+    );
+    if (roleResult.rowCount !== selectedRoleKeys.length) {
+      await client.query('ROLLBACK');
+      return res.redirect('/admin/users?error=invalid');
+    }
+
+    await client.query(
+      `UPDATE users
+       SET name = $1, email = $2, active = $3, role = $4
+       WHERE id = $5`,
+      [fullName, email, activeValue === 'true', finalRoleKeys[0], Number(userId)]
+    );
+
+    await client.query(
+      `DELETE FROM user_roles ur
+       USING roles r
+       WHERE ur.role_id = r.id
+         AND ur.user_id = $1
+         AND r.role_key = ANY($2::text[])
+         AND NOT (r.role_key = ANY($3::text[]))`,
+      [Number(userId), editableRoleKeys, selectedRoleKeys]
+    );
+    const accessChanged = accountResult.rows[0].active !== (activeValue === 'true')
+      || existingRoleKeys.length !== finalRoleKeys.length
+      || existingRoleKeys.some((roleKey) => !finalRoleKeys.includes(roleKey));
+    if (accessChanged) {
+      await client.query(
+        `DELETE FROM session
+         WHERE sess->'user'->>'id' = $1`,
+        [String(userId)]
+      );
+    }
+    for (const role of roleResult.rows) {
+      await client.query(
+        `INSERT INTO user_roles (user_id, role_id, assigned_by_user_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, role_id) DO NOTHING`,
+        [Number(userId), role.id, req.session.user.id]
+      );
+    }
+
+    await recordAccessEvent(client, req, {
+      eventType: 'user_account_updated',
+      resourceType: 'user',
+      resourceId: userId,
+      details: {
+        active: activeValue === 'true',
+        roleKeys: finalRoleKeys,
+        sessionsRevoked: accessChanged,
+      },
+    });
+    await client.query('COMMIT');
+    res.redirect('/admin/users?updated=1');
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir actualización de cuenta:', rollbackError.message);
+    });
+    if (error.code === '23505') {
+      return res.redirect('/admin/users?error=email');
+    }
+    console.error('Error al actualizar cuenta de usuario:', error.message);
     res.redirect('/admin/users?error=1');
   } finally {
     client.release();

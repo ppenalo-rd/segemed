@@ -816,6 +816,33 @@
             updateTelehealthFields();
             timeSelector.innerHTML = '<option value="">Seleccione primero médico, sede y fecha...</option>';
         });
+        // Express parses URL-encoded forms here, allowing the CSRF token to reach req.body.
+        async function submitAppointment(form) {
+            return fetch(form.action, {
+                method: 'POST',
+                headers: { Accept: 'application/json' },
+                body: new URLSearchParams(new FormData(form)),
+            });
+        }
+        // Fetches the current token before retrying a request rejected for a stale token.
+        async function refreshAppointmentCsrfToken(form) {
+            const response = await fetch('/auth/session/heartbeat', {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { Accept: 'application/json' },
+            });
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok || response.redirected || !contentType.includes('application/json')) {
+                window.location.assign('/login?error=session');
+                throw new Error('Tu sesión expiró. Vuelve a iniciar sesión para continuar.');
+            }
+            const result = await response.json();
+            if (typeof result.csrfToken !== 'string' || !result.csrfToken) {
+                throw new Error('No se pudo renovar la validación de seguridad. Actualiza la página e inténtalo de nuevo.');
+            }
+            form.querySelector('input[name="_csrf"]').value = result.csrfToken;
+            document.getElementById('patientSearchCsrf').value = result.csrfToken;
+        }
         document.getElementById('appointmentForm').addEventListener('submit', async (event) => {
             event.preventDefault();
             const form = event.currentTarget;
@@ -831,15 +858,29 @@
             submitButton.disabled = true;
             feedback.hidden = true;
             try {
-                const response = await fetch(form.action, {
-                    method: 'POST',
-                    headers: { Accept: 'application/json' },
-                    body: new FormData(form),
-                });
+                let response = await submitAppointment(form);
+                if (response.status === 403) {
+                    const result = await response.json().catch(() => null);
+                    if (result?.error === 'csrf_token_mismatch') {
+                        await refreshAppointmentCsrfToken(form);
+                        response = await submitAppointment(form);
+                    } else if (result?.error === 'session_expired') {
+                        window.location.assign('/login?error=session');
+                        return;
+                    } else {
+                        throw new Error(result?.error || 'No se pudo validar la solicitud. Actualiza la página e inténtalo de nuevo.');
+                    }
+                }
+                if (response.status === 401) {
+                    window.location.assign('/login?error=session');
+                    return;
+                }
                 if (!response.ok) {
-                    const message = response.headers.get('content-type')?.includes('application/json')
-                        ? (await response.json()).error
-                        : await response.text();
+                    const isJson = response.headers.get('content-type')?.includes('application/json');
+                    const result = isJson ? await response.json() : null;
+                    const message = result?.error === 'csrf_token_mismatch'
+                        ? 'La validación de seguridad cambió. Inténtalo de nuevo; no se pudo agendar la cita.'
+                        : (result?.error || (isJson ? '' : await response.text()));
                     throw new Error(message || 'No se pudo agendar la cita.');
                 }
                 window.location.assign('/agenda');
