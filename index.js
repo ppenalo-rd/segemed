@@ -575,9 +575,18 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
         [isSystemAdmin, ['doctor', 'admissions', 'nurse', 'patient']]
       ),
       db.query(`
-        SELECT d.id, d.name, d.main_specialty
+        SELECT d.id, d.name,
+               COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
         FROM doctors d
         LEFT JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
+        LEFT JOIN LATERAL (
+          SELECT s.name
+          FROM doctor_specialties ds
+          JOIN specialties s ON s.id = ds.specialty_id
+          WHERE ds.doctor_id = d.id AND s.active = TRUE
+          ORDER BY ds.is_primary DESC, s.name
+          LIMIT 1
+        ) specialty ON TRUE
         WHERE dua.doctor_id IS NULL
           AND d.is_annulled IS DISTINCT FROM TRUE
         ORDER BY d.name
@@ -1744,9 +1753,21 @@ app.get('/agenda', async (req, res) => {
     ]);
 
     const doctorQuery = `
-       SELECT d.id, d.name, d.main_specialty
+       SELECT d.id, d.name,
+              COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
        FROM doctors d
        JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
+       JOIN users u ON u.id = dua.user_id AND u.active = TRUE
+       JOIN user_roles ur ON ur.user_id = u.id
+       JOIN roles r ON r.id = ur.role_id AND r.role_key = 'doctor' AND r.active = TRUE
+       LEFT JOIN LATERAL (
+         SELECT s.name
+         FROM doctor_specialties ds
+         JOIN specialties s ON s.id = ds.specialty_id
+         WHERE ds.doctor_id = d.id AND s.active = TRUE
+         ORDER BY ds.is_primary DESC, s.name
+         LIMIT 1
+       ) specialty ON TRUE
        WHERE d.is_annulled IS DISTINCT FROM TRUE
          AND ($1::integer IS NULL OR d.id = $1)
        ORDER BY d.name ASC`;
@@ -1853,10 +1874,14 @@ app.get('/api/doctor-availability', async (req, res) => {
              COALESCE(dat.duration_minutes, d.default_appointment_duration_minutes) AS duration_minutes
       FROM doctor_schedules ds
       JOIN doctor_user_accounts dua ON dua.doctor_id = ds.doctor_id
+      JOIN users u ON u.id = dua.user_id AND u.active = TRUE
+      JOIN user_roles ur ON ur.user_id = u.id
+      JOIN roles r ON r.id = ur.role_id AND r.role_key = 'doctor' AND r.active = TRUE
       JOIN doctors d ON d.id = ds.doctor_id
       LEFT JOIN doctor_appointment_types dat
         ON dat.doctor_id = ds.doctor_id AND dat.appointment_type = $4
       WHERE ds.doctor_id = $1 AND ds.branch_id = $2 AND ds.day_of_week = $3
+        AND d.is_annulled IS DISTINCT FROM TRUE
     `;
     const { rows } = await db.query(query, [doctor_id, branch_id, dayOfWeek, appointment_type]);
 
@@ -2049,6 +2074,9 @@ app.post('/appointments/create', async (req, res) => {
               COALESCE(dat.duration_minutes, d.default_appointment_duration_minutes) AS duration_minutes
        FROM doctors d
        JOIN doctor_user_accounts dua ON dua.doctor_id = d.id
+       JOIN users u ON u.id = dua.user_id AND u.active = TRUE
+       JOIN user_roles ur ON ur.user_id = u.id
+       JOIN roles r ON r.id = ur.role_id AND r.role_key = 'doctor' AND r.active = TRUE
        LEFT JOIN doctor_appointment_types dat
          ON dat.doctor_id = d.id AND dat.appointment_type = $2
        WHERE d.id = $1 AND d.is_annulled IS DISTINCT FROM TRUE`,
@@ -2139,11 +2167,93 @@ app.post('/appointments/create', async (req, res) => {
 
 app.get('/admin/doctors', requireRole('system_admin', 'admissions'), async (req, res) => {
   try {
-    const { rows } = await db.query('SELECT * FROM doctors ORDER BY name ASC');
-    res.render('doctors', { doctors: rows });
+    const [doctorsResult, specialtiesResult] = await Promise.all([
+      db.query(`
+        SELECT d.*,
+               COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
+        FROM doctors d
+        LEFT JOIN LATERAL (
+          SELECT s.name
+          FROM doctor_specialties ds
+          JOIN specialties s ON s.id = ds.specialty_id
+          WHERE ds.doctor_id = d.id AND s.active = TRUE
+          ORDER BY ds.is_primary DESC, s.name
+          LIMIT 1
+        ) specialty ON TRUE
+        ORDER BY d.name ASC
+      `),
+      db.query('SELECT id, name, active FROM specialties WHERE active = TRUE ORDER BY name'),
+    ]);
+    res.render('doctors', {
+      doctors: doctorsResult.rows,
+      specialties: specialtiesResult.rows,
+      editingDoctor: null,
+      message: req.query.updated === '1' ? 'Los datos del médico se actualizaron correctamente.' : null,
+    });
   } catch (err) {
     console.error('Error al cargar la lista de médicos:', err.message);
     res.status(500).send('Error interno al cargar el directorio de médicos.');
+  }
+});
+
+app.get('/admin/doctors/:id/edit', requireRole('system_admin', 'admissions'), async (req, res) => {
+  if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).send('Identificador de médico no válido.');
+
+  try {
+    const [doctorResult, doctorsResult, specialtiesResult] = await Promise.all([
+      db.query(`
+        SELECT d.*,
+               primary_specialty.specialty_id,
+               COALESCE(primary_specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
+        FROM doctors d
+        LEFT JOIN LATERAL (
+          SELECT s.id AS specialty_id, s.name
+          FROM doctor_specialties ds
+          JOIN specialties s ON s.id = ds.specialty_id
+          WHERE ds.doctor_id = d.id
+          ORDER BY ds.is_primary DESC, s.name
+          LIMIT 1
+        ) primary_specialty ON TRUE
+        WHERE d.id = $1
+      `, [req.params.id]),
+      db.query(`
+        SELECT d.*,
+               COALESCE(specialty.name, NULLIF(BTRIM(d.main_specialty), ''), 'Medicina General') AS main_specialty
+        FROM doctors d
+        LEFT JOIN LATERAL (
+          SELECT s.name
+          FROM doctor_specialties ds
+          JOIN specialties s ON s.id = ds.specialty_id
+          WHERE ds.doctor_id = d.id AND s.active = TRUE
+          ORDER BY ds.is_primary DESC, s.name
+          LIMIT 1
+        ) specialty ON TRUE
+        ORDER BY d.name ASC
+      `),
+      db.query(`
+        SELECT id, name, active
+        FROM specialties
+        WHERE active = TRUE
+           OR id = (
+             SELECT ds.specialty_id
+             FROM doctor_specialties ds
+             WHERE ds.doctor_id = $1 AND ds.is_primary = TRUE
+             LIMIT 1
+           )
+        ORDER BY name
+      `, [req.params.id]),
+    ]);
+
+    if (!doctorResult.rowCount) return res.status(404).send('Médico no encontrado.');
+    res.render('doctors', {
+      doctors: doctorsResult.rows,
+      specialties: specialtiesResult.rows,
+      editingDoctor: doctorResult.rows[0],
+      message: null,
+    });
+  } catch (err) {
+    console.error('Error al cargar el perfil para edición:', err.message);
+    res.status(500).send('Error interno al cargar el perfil médico para edición.');
   }
 });
 
@@ -2179,47 +2289,106 @@ app.get('/admin/doctors/:id/schedules', requireRole('system_admin', 'admissions'
 
 app.post('/admin/doctors/save', requireRole('system_admin', 'admissions'), async (req, res) => {
   const { 
-    id, code, name, personal_type, main_specialty, office_room, title, 
+    id, code, name, personal_type, office_room, title,
     dni_document, college_number, msas_number, address, phone, email, 
     consultation_convenant_pct, surgery_convenant_pct,
-    default_appointment_duration_minutes: durationInput,
+    default_appointment_duration_minutes: durationInput, specialty_id: specialtyIdInput,
+    profile_active: profileActiveInput,
   } = req.body;
+
+  if (id && !/^[1-9]\d*$/.test(String(id))) {
+    return res.status(400).send('Identificador de médico no válido.');
+  }
+
+  const specialtyId = Number(specialtyIdInput);
+  if (!Number.isInteger(specialtyId) || specialtyId < 1) {
+    return res.status(400).send('Selecciona una especialidad médica válida.');
+  }
 
   try {
     const duration = Number(durationInput);
     if (!Number.isInteger(duration) || duration < 5 || duration > 240) {
       return res.status(400).send('La duración predeterminada debe ser un número entre 5 y 240 minutos.');
     }
-    if (id) {
-      const queryUpdate = `
-        UPDATE doctors SET 
-          code = $1, name = $2, personal_type = $3, main_specialty = $4, 
-          office_room = $5, title = $6, dni_document = $7, college_number = $8, 
-          msas_number = $9, address = $10, phone = $11, email = $12, 
-          consultation_convenant_pct = $13, surgery_convenant_pct = $14, 
-          default_appointment_duration_minutes = $15, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $16
-      `;
-      await db.query(queryUpdate, [
-        code, name, personal_type, main_specialty, office_room, title, 
-        dni_document, college_number, msas_number, address, phone, email, 
-        consultation_convenant_pct || 0, surgery_convenant_pct || 0, duration, id
-      ]);
-    } else {
-      const queryInsert = `
-        INSERT INTO doctors (
-          code, name, personal_type, main_specialty, office_room, title, 
-          dni_document, college_number, msas_number, address, phone, email, 
-          consultation_convenant_pct, surgery_convenant_pct, default_appointment_duration_minutes
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-      `;
-      await db.query(queryInsert, [
-        code, name, personal_type, main_specialty, office_room, title, 
-        dni_document, college_number, msas_number, address, phone, email, 
-        consultation_convenant_pct || 0, surgery_convenant_pct || 0, duration
-      ]);
+    const specialtyResult = await db.query(
+      `SELECT id, name
+       FROM specialties
+       WHERE id = $1
+         AND (
+           active = TRUE
+           OR EXISTS (
+             SELECT 1
+             FROM doctor_specialties ds
+             WHERE ds.doctor_id = $2 AND ds.specialty_id = specialties.id
+           )
+         )`,
+      [specialtyId, id || null]
+    );
+    if (!specialtyResult.rowCount) {
+      return res.status(400).send('La especialidad seleccionada no está activa.');
     }
-    res.redirect('/admin/doctors');
+    const specialty = specialtyResult.rows[0];
+    const isAnnulled = profileActiveInput !== 'on' && profileActiveInput !== 'true';
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      let doctorId;
+      const doctorValues = [
+        code, name, personal_type, specialty.name, office_room, title,
+        dni_document, college_number, msas_number, address, phone, email,
+        consultation_convenant_pct || 0, surgery_convenant_pct || 0, duration,
+      ];
+
+      if (id) {
+        const queryUpdate = `
+          UPDATE doctors SET
+            code = $1, name = $2, personal_type = $3, main_specialty = $4,
+            office_room = $5, title = $6, dni_document = $7, college_number = $8,
+            msas_number = $9, address = $10, phone = $11, email = $12,
+            consultation_convenant_pct = $13, surgery_convenant_pct = $14,
+            default_appointment_duration_minutes = $15, is_annulled = $16,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = $17
+          RETURNING id
+        `;
+        const updated = await client.query(queryUpdate, [...doctorValues, isAnnulled, id]);
+        if (!updated.rowCount) {
+          await client.query('ROLLBACK');
+          return res.status(404).send('Médico no encontrado.');
+        }
+        doctorId = updated.rows[0].id;
+      } else {
+        const queryInsert = `
+          INSERT INTO doctors (
+            code, name, personal_type, main_specialty, office_room, title,
+            dni_document, college_number, msas_number, address, phone, email,
+            consultation_convenant_pct, surgery_convenant_pct, default_appointment_duration_minutes
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          RETURNING id
+        `;
+        const inserted = await client.query(queryInsert, doctorValues);
+        doctorId = inserted.rows[0].id;
+      }
+
+      await client.query(
+        'UPDATE doctor_specialties SET is_primary = FALSE WHERE doctor_id = $1',
+        [doctorId]
+      );
+      await client.query(
+        `INSERT INTO doctor_specialties (doctor_id, specialty_id, is_primary)
+         VALUES ($1, $2, TRUE)
+         ON CONFLICT (doctor_id, specialty_id)
+         DO UPDATE SET is_primary = TRUE`,
+        [doctorId, specialty.id]
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    res.redirect(id ? '/admin/doctors?updated=1' : '/admin/doctors');
   } catch (err) {
     console.error('Error al guardar el perfil del médico:', err.message);
     res.status(500).send('Error interno al procesar el perfil médico.');

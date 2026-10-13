@@ -10,6 +10,9 @@
 <%- include('partials/navigation') %>
 
 <div class="container my-5">
+    <% if (message) { %>
+        <div class="alert alert-success" role="status"><%= message %></div>
+    <% } %>
     <!-- Cabecera -->
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
@@ -22,85 +25,101 @@
     <!-- Formulario de Registro / Edición de Médico -->
     <div class="card shadow-sm border-0 mb-5">
         <div class="card-header bg-primary text-white fw-bold">
-            Ficha de Registro del Médico
+            <%= editingDoctor ? 'Editar ficha del médico' : 'Ficha de Registro del Médico' %>
         </div>
         <div class="card-body">
             <form action="/admin/doctors/save" method="POST">
                 <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                <input type="hidden" name="id" id="doctor_id">
+                <input type="hidden" name="id" id="doctor_id" value="<%= editingDoctor ? editingDoctor.id : '' %>">
 
                 <div class="row g-3">
                     <div class="col-md-3">
                         <label class="form-label fw-bold">Código Interno</label>
-                        <input type="text" name="code" class="form-control" placeholder="Ej. V038134198" required>
+                        <input type="text" name="code" class="form-control" placeholder="Ej. V038134198" value="<%= editingDoctor ? editingDoctor.code : '' %>" required>
                     </div>
                     <div class="col-md-5">
                         <label class="form-label fw-bold">Nombre Completo</label>
-                        <input type="text" name="name" class="form-control" placeholder="Dr. Nombre Apellido" required>
+                        <input type="text" name="name" class="form-control" placeholder="Dr. Nombre Apellido" value="<%= editingDoctor ? editingDoctor.name : '' %>" required>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Tipo de Personal</label>
-                        <select name="personal_type" class="form-select">
-                            <option value="MÉDICO" selected>MÉDICO</option>
-                            <option value="ESPECIALISTA">ESPECIALISTA</option>
+                        <select name="personal_type" class="form-select" required>
+                            <option value="MÉDICO" <%= !editingDoctor || editingDoctor.personal_type === 'MÉDICO' ? 'selected' : '' %>>MÉDICO</option>
+                            <option value="ESPECIALISTA" <%= editingDoctor && editingDoctor.personal_type === 'ESPECIALISTA' ? 'selected' : '' %>>ESPECIALISTA</option>
                         </select>
                     </div>
 
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Especialidad Principal</label>
-                        <input type="text" name="main_specialty" class="form-control" placeholder="Ej. MEDICINA INTERNA" required>
+                        <select name="specialty_id" class="form-select" required>
+                            <option value="">Seleccione una especialidad...</option>
+                            <% specialties.forEach((specialty) => { %>
+                                <option value="<%= specialty.id %>" <%= editingDoctor && Number(editingDoctor.specialty_id) === specialty.id ? 'selected' : '' %>><%= specialty.name %><%= !specialty.active ? ' (inactiva)' : '' %></option>
+                            <% }); %>
+                        </select>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label fw-bold" for="default_appointment_duration_minutes">Duración predeterminada (min)</label>
-                        <input type="number" id="default_appointment_duration_minutes" name="default_appointment_duration_minutes" class="form-control" value="20" min="5" max="240" required>
+                        <input type="number" id="default_appointment_duration_minutes" name="default_appointment_duration_minutes" class="form-control" value="<%= editingDoctor ? editingDoctor.default_appointment_duration_minutes : 20 %>" min="5" max="240" required>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Consultorio</label>
-                        <input type="text" name="office_room" class="form-control" placeholder="Ej. CONSULTORIO 07">
+                        <input type="text" name="office_room" class="form-control" placeholder="Ej. CONSULTORIO 07" value="<%= editingDoctor ? editingDoctor.office_room || '' : '' %>">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label fw-bold">Título</label>
-                        <input type="text" name="title" class="form-control" placeholder="Ej. DR">
+                        <input type="text" name="title" class="form-control" placeholder="Ej. DR" value="<%= editingDoctor ? editingDoctor.title || '' : '' %>">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label fw-bold">Nro Cédula</label>
-                        <input type="text" name="dni_document" class="form-control" placeholder="3813419" required>
+                        <input type="text" name="dni_document" class="form-control" placeholder="3813419" value="<%= editingDoctor ? editingDoctor.dni_document : '' %>" required>
                     </div>
 
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Nro Colegio Médico</label>
-                        <input type="text" name="college_number" class="form-control" placeholder="5716">
+                        <input type="text" name="college_number" class="form-control" placeholder="5716" value="<%= editingDoctor ? editingDoctor.college_number || '' : '' %>">
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Nro MSAS</label>
-                        <input type="text" name="msas_number" class="form-control" placeholder="33806">
+                        <input type="text" name="msas_number" class="form-control" placeholder="33806" value="<%= editingDoctor ? editingDoctor.msas_number || '' : '' %>">
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-bold">Teléfono</label>
-                        <input type="text" name="phone" class="form-control" placeholder="04144311316">
+                        <input type="text" name="phone" class="form-control" placeholder="04144311316" value="<%= editingDoctor ? editingDoctor.phone || '' : '' %>">
                     </div>
 
                     <div class="col-md-6">
                         <label class="form-label fw-bold">Correo Electrónico</label>
-                        <input type="email" name="email" class="form-control" placeholder="medico@sigemed.com">
+                        <input type="email" name="email" class="form-control" placeholder="medico@sigemed.com" value="<%= editingDoctor ? editingDoctor.email || '' : '' %>">
                     </div>
                     <div class="col-md-6">
                         <label class="form-label fw-bold">Dirección</label>
-                        <input type="text" name="address" class="form-control" placeholder="Urb. Las Esmeraldas...">
+                        <input type="text" name="address" class="form-control" placeholder="Urb. Las Esmeraldas..." value="<%= editingDoctor ? editingDoctor.address || '' : '' %>">
                     </div>
 
                     <div class="col-md-3">
                         <label class="form-label fw-bold">% Convenio Consultas</label>
-                        <input type="number" step="0.01" name="consultation_convenant_pct" class="form-control" value="0.00">
+                        <input type="number" step="0.01" name="consultation_convenant_pct" class="form-control" value="<%= editingDoctor ? editingDoctor.consultation_convenant_pct : '0.00' %>">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label fw-bold">% Convenio Cirugías</label>
-                        <input type="number" step="0.01" name="surgery_convenant_pct" class="form-control" value="0.00">
+                        <input type="number" step="0.01" name="surgery_convenant_pct" class="form-control" value="<%= editingDoctor ? editingDoctor.surgery_convenant_pct : '0.00' %>">
                     </div>
+                    <% if (editingDoctor) { %>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" role="switch" id="doctorActive" name="profile_active" value="true" <%= editingDoctor.is_annulled ? '' : 'checked' %>>
+                                <label class="form-check-label fw-bold" for="doctorActive">Perfil activo</label>
+                            </div>
+                        </div>
+                    <% } %>
                 </div>
 
                 <div class="mt-4 text-end">
-                    <button type="submit" class="btn btn-success fw-bold px-4 shadow-sm">Aceptar / Guardar</button>
+                    <% if (editingDoctor) { %>
+                        <a href="/admin/doctors" class="btn btn-outline-secondary">Cancelar</a>
+                    <% } %>
+                    <button type="submit" class="btn btn-success fw-bold px-4 shadow-sm"><%= editingDoctor ? 'Guardar cambios' : 'Aceptar / Guardar' %></button>
                 </div>
             </form>
         </div>
@@ -109,7 +128,7 @@
     <!-- Tabla de Médicos Registrados -->
     <div class="card shadow-sm border-0">
         <div class="card-header bg-dark text-white fw-bold">
-            Directorio de Médicos Activos
+            Directorio de Médicos
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
@@ -122,6 +141,7 @@
                             <th>Consultorio</th>
                             <th>Cédula</th>
                             <th>Teléfono</th>
+                            <th>Estado</th>
                             <th class="text-center">Acciones</th>
                         </tr>
                     </thead>
@@ -135,7 +155,17 @@
                                     <td><%= doc.office_room || 'N/A' %></td>
                                     <td><%= doc.dni_document %></td>
                                     <td><%= doc.phone || 'N/A' %></td>
+                                    <td>
+                                        <% if (doc.is_annulled) { %>
+                                            <span class="badge text-bg-secondary">Inactivo</span>
+                                        <% } else { %>
+                                            <span class="badge text-bg-success">Activo</span>
+                                        <% } %>
+                                    </td>
                                     <td class="text-center">
+                                        <a href="/admin/doctors/<%= doc.id %>/edit" class="btn btn-sm btn-outline-secondary fw-bold me-1">
+                                            Editar
+                                        </a>
                                         <!-- Enlace directo integrado hacia la matriz de horarios -->
                                         <a href="/admin/doctors/<%= doc.id %>/schedules" class="btn btn-sm btn-outline-primary fw-bold">
                                             📅 Configurar Horario
@@ -145,7 +175,7 @@
                             <% }) %>
                         <% } else { %>
                             <tr>
-                                <td colspan="7" class="text-center py-4 text-muted">
+                                <td colspan="8" class="text-center py-4 text-muted">
                                     No hay médicos registrados en el sistema.
                                 </td>
                             </tr>

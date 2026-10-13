@@ -111,6 +111,47 @@ CREATE TABLE IF NOT EXISTS doctor_specialties (
     PRIMARY KEY (doctor_id, specialty_id)
 );
 
+INSERT INTO specialties (code, name, description)
+VALUES
+    ('medicina-general', 'Medicina General', 'Atención integral de salud y evaluación inicial.'),
+    ('pediatria', 'Pediatría', 'Atención médica de niñas, niños y adolescentes.'),
+    ('traumatologia', 'Traumatología', 'Evaluación y tratamiento del sistema musculoesquelético.'),
+    ('cardiologia', 'Cardiología', 'Prevención, diagnóstico y tratamiento de enfermedades cardiovasculares.'),
+    ('ginecologia', 'Ginecología', 'Atención de salud ginecológica y reproductiva.')
+ON CONFLICT DO NOTHING;
+
+WITH mapped_doctors AS (
+    SELECT d.id AS doctor_id,
+           CASE REGEXP_REPLACE(
+               TRANSLATE(LOWER(BTRIM(d.main_specialty)), 'áéíóúüñ', 'aeiouun'),
+               '[^a-z0-9]+',
+               '',
+               'g'
+           )
+               WHEN 'medicina' THEN 'medicina-general'
+               WHEN 'medicinageneral' THEN 'medicina-general'
+               WHEN 'medicinaintegral' THEN 'medicina-general'
+               WHEN 'pediatria' THEN 'pediatria'
+               WHEN 'traumatologia' THEN 'traumatologia'
+               WHEN 'traumatologiayortopedia' THEN 'traumatologia'
+               WHEN 'ortopedia' THEN 'traumatologia'
+               WHEN 'cardiologia' THEN 'cardiologia'
+               WHEN 'ginecologia' THEN 'ginecologia'
+               WHEN 'ginecologiayobstetricia' THEN 'ginecologia'
+               WHEN 'obstetriciayginecologia' THEN 'ginecologia'
+               ELSE NULL
+           END AS specialty_code
+    FROM doctors d
+    WHERE NULLIF(BTRIM(d.main_specialty), '') IS NOT NULL
+)
+INSERT INTO doctor_specialties (doctor_id, specialty_id, is_primary)
+SELECT md.doctor_id, s.id, TRUE
+FROM mapped_doctors md
+JOIN specialties s ON s.code = md.specialty_code AND s.active = TRUE
+WHERE md.specialty_code IS NOT NULL
+ON CONFLICT (doctor_id, specialty_id)
+DO UPDATE SET is_primary = TRUE;
+
 ALTER TABLE appointments
     ADD COLUMN IF NOT EXISTS care_mode VARCHAR(20) NOT NULL DEFAULT 'in_person';
 

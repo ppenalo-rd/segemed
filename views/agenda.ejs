@@ -170,7 +170,7 @@
                         <% } %>
                         <% if (doctores) { doctores.forEach((doctor) => { %>
                             <option value="<%= doctor.id %>" <%= Number(calendarDoctorId) === doctor.id ? 'selected' : '' %>>
-                                Dr. <%= doctor.name %> · <%= doctor.main_specialty || 'General' %>
+                                Dr. <%= doctor.name %> · <%= doctor.main_specialty || 'Medicina General' %>
                             </option>
                         <% }); } %>
                     </select>
@@ -380,7 +380,7 @@
                           <option value=""><%= doctores.length ? 'Seleccione médico tratante...' : 'No hay médicos habilitados para agendar' %></option>
                           <% if (typeof doctores !== 'undefined') { %>
                               <% doctores.forEach(d => { %>
-                                  <option value="<%= d.id %>">Dr. <%= d.name %> - <%= d.main_specialty %></option>
+                                  <option value="<%= d.id %>">Dr. <%= d.name %> - <%= d.main_specialty || 'Medicina General' %></option>
                               <% }) %>
                           <% } %>
                       </select>

@@ -69,6 +69,10 @@ Las rutas de los módulos conservan sus propios controles de autorización; ocul
 
 En `/admin/users`, el administrador puede crear una cuenta con perfil Médico y asociarla a un profesional existente, o vincular un perfil médico sin asignar a una cuenta activa ya existente con rol Médico. Solo los perfiles asociados aparecen como médicos disponibles para agendar; la agenda indica cómo completar el vínculo cuando no hay ninguno habilitado.
 
+El directorio médico utiliza `specialties` y la relación `doctor_specialties` para asociar especialidades al perfil profesional, con una especialidad principal. El catálogo inicial incluye Medicina General, Pediatría, Traumatología, Cardiología y Ginecología. Ejecuta `npm run db:migrate` para aplicar `010_doctor_specialties_seed.sql`; esta migración también asocia los perfiles existentes cuando su campo de especialidad coincide con una de esas especialidades. Los selectores de la agenda muestran únicamente médicos con perfil no anulado, cuenta activa y rol Médico activo.
+
+En `/admin/doctors`, el botón **Editar** abre el perfil con los datos existentes precargados. Los cambios se guardan mediante `POST /admin/doctors/save` con consultas parametrizadas; allí también se puede cambiar la especialidad principal y activar o desactivar el perfil. Al guardar, se muestra una confirmación y se conserva la asociación de la especialidad principal en `doctor_specialties`.
+
 ### Calendario médico
 
 La ruta `/agenda` ofrece una vista mensual, semanal y de lista con filtros por médico y sede. Las citas se cargan bajo demanda desde `GET /api/calendar/appointments` usando el rango visible del calendario; el rango se valida y limita a 62 días. El listado operativo queda acotado a los últimos tres días y los próximos 30; al abrir una cita histórica, `?date=YYYY-MM-DD` centra el listado y calendario en esa fecha. Al pasar o enfocar una cita se muestran hora, paciente, documento, motivo, médico, sede y estado. Al seleccionarla se abre su fila en la agenda. Al seleccionar un día se abre el formulario de agendamiento con la fecha precargada.
