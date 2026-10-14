@@ -4,20 +4,26 @@
         <div class="d-flex flex-wrap align-items-center gap-2">
             <a class="btn btn-sm btn-outline-dark" href="/dashboard">Menú principal</a>
             <a class="btn btn-sm btn-outline-primary" href="/account/profile">Mi perfil</a>
-            <a class="btn btn-sm btn-outline-primary" href="/agenda">Agenda</a>
-            <a class="btn btn-sm btn-outline-primary" href="/pacientes">Pacientes</a>
-            <% if (currentUser && currentUser.roles.some((role) => ['system_admin', 'audit_security', 'admissions', 'doctor', 'nurse'].includes(role))) { %>
+            <% if (currentUser.roles.includes('doctor')) { %>
+                <a class="btn btn-sm btn-outline-success" href="/appointments/today">Consultorio · Hoy</a>
+                <a class="btn btn-sm btn-outline-primary" href="/pacientes">Directorio clínico</a>
+            <% } %>
+            <% if (currentUser.roles.includes('admissions')) { %>
+                <a class="btn btn-sm btn-outline-success" href="/agenda">Admisión · Sala de espera</a>
+                <a class="btn btn-sm btn-outline-primary" href="/pacientes">Pacientes</a>
+            <% } %>
+            <% if (currentUser.roles.some((role) => ['system_admin', 'audit_security'].includes(role))) { %>
                 <a class="btn btn-sm btn-outline-primary" href="/reports">Reportes</a>
             <% } %>
-            <% if (currentUser && currentUser.roles.includes('admissions')) { %>
-                <a class="btn btn-sm btn-outline-success" href="/billing">Caja</a>
-            <% } %>
-            <% if (currentUser && currentUser.roles.includes('system_admin')) { %>
+            <% if (currentUser.roles.includes('system_admin')) { %>
+                <a class="btn btn-sm btn-outline-success" href="/billing">Facturación y Caja</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/users">Configuración</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/doctors">Médicos</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/medications">Medicamentos</a>
                 <a class="btn btn-sm btn-outline-secondary" href="/admin/billing">Configurar facturación</a>
             <% } %>
-            <% if (currentUser && currentUser.roles.some((role) => ['system_admin', 'audit_security'].includes(role))) { %>
-                <a class="btn btn-sm btn-outline-secondary" href="/admin/users">Usuarios</a>
-                <a class="btn btn-sm btn-outline-secondary" href="/admin/doctors">Médicos</a>
+            <% if (currentUser.roles.some((role) => ['system_admin', 'audit_security'].includes(role))) { %>
+                <a class="btn btn-sm btn-outline-secondary" href="/admin/security/audit">Seguridad y auditoría</a>
             <% } %>
             <span class="small text-muted d-none d-md-inline"><%= currentUser ? currentUser.name : '' %></span>
             <form action="/logout" method="POST" class="m-0">

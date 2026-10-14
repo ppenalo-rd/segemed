@@ -1,5 +1,6 @@
 require('dotenv').config();
 const crypto = require('node:crypto');
+const net = require('node:net');
 const path = require('node:path');
 const express = require('express');
 const session = require('express-session');
@@ -24,17 +25,35 @@ const {
   hashOtp,
   otpMatches,
 } = require('./services/otp');
-const { sendLoginOtp, sendPasswordChangeOtp } = require('./services/email');
+const { sendLoginOtp, sendPasswordChangeOtp, sendSoapModificationOtp } = require('./services/email');
 const { validateNewPassword } = require('./services/password-policy');
 const booking = require('./services/booking');
+const { findEligibleTodaysSoapAppointment } = require('./services/soap-appointments');
+const {
+  MAX_PATIENT_DIRECTORY_PAGE,
+  normalizePatientDirectoryFilters,
+  searchPatientDirectory,
+} = require('./services/patient-directory');
 const { mapAppointmentsToCalendarEvents } = require('./services/appointment-calendar');
 const doctorSchedules = require('./services/doctor-schedules');
-const { normalizeDiagnosisCodes } = require('./services/clinical-note');
+const {
+  formatDiagnosisLabel,
+  normalizeDiagnosisCodes,
+  parseLegacyCie10Reference,
+} = require('./services/clinical-note');
+const { lookupDiagnosisCodes, searchCie10 } = require('./services/cie10');
 const { normalizeStudyOrderInput } = require('./services/study-orders');
 const { normalizeMedication, normalizePrescriptionItems } = require('./services/prescription');
+const {
+  SOAP_EDIT_WINDOW_HOURS,
+  buildSoapAuditChanges,
+  hashSoapEditPayload,
+  isSoapEditWindowOpen,
+} = require('./services/soap-audit');
 const billing = require('./services/billing');
 const reports = require('./services/reports');
 const { recordAccessEvent } = require('./services/audit');
+const { buildNavigationSections } = require('./services/navigation');
 const app = express();
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -78,6 +97,7 @@ app.use(helmet({
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
 }));
 app.use('/assets/bootstrap', express.static(path.join(__dirname, 'node_modules', 'bootstrap', 'dist')));
+app.use('/assets', express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.set('view engine', 'ejs');
@@ -155,6 +175,13 @@ const passwordChangeRequestRateLimit = rateLimit({
 const passwordChangeVerifyRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
+});
+const soapEditOtpRequestRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
@@ -539,47 +566,8 @@ app.use((req, res, next) => {
 });
 
 app.get('/dashboard', (req, res) => {
-  const roles = req.session.user.roles || [];
-  const isSystemAdmin = roles.includes('system_admin');
-  const modules = [
-    {
-      id: 'admissions',
-      title: 'Admisión y Agenda',
-      description: 'Gestión de citas, disponibilidad y flujo de pacientes.',
-      href: '/agenda',
-      roles: ['admissions', 'system_admin'],
-    },
-    {
-      id: 'medical',
-      title: 'Consulta Médica / SOAP y Recetas',
-      description: 'Acceso al directorio de pacientes, evolución clínica y prescripciones.',
-      href: '/pacientes',
-      roles: ['doctor', 'nurse', 'system_admin'],
-    },
-    {
-      id: 'billing',
-      title: 'Facturación y Caja',
-      description: 'Emisión de comprobantes y procesamiento de cobros.',
-      href: '/billing',
-      roles: ['admissions', 'system_admin'],
-    },
-    {
-      id: 'reports',
-      title: 'Reportes y Estadísticas',
-      description: 'Indicadores agregados y exportaciones según permisos.',
-      href: '/reports',
-      roles: ['audit_security', 'system_admin'],
-    },
-    {
-      id: 'administration',
-      title: 'Gestión de Usuarios y Configuración',
-      description: 'Administración de cuentas, roles, médicos y parámetros del sistema.',
-      href: '/admin/users',
-      roles: ['system_admin'],
-    },
-  ].filter((module) => isSystemAdmin || module.roles.some((role) => roles.includes(role)));
-
-  res.render('dashboard', { modules });
+  const sections = buildNavigationSections(req.session.user.roles);
+  res.render('dashboard', { sections });
 });
 
 // Renders the signed-in user's account settings without exposing password data.
@@ -591,6 +579,83 @@ app.get('/account/profile', async (req, res, next) => {
     );
     if (!rows.length) return res.status(404).send('No se encontró la cuenta activa.');
     res.render('account_profile', { account: rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/admin/security/audit', requireRole('system_admin', 'audit_security'), async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT a.id, a.user_id, u.name AS user_name, a.patient_id,
+              a.event_type, a.resource_type, a.resource_id, a.occurred_at, a.ip_address
+       FROM access_audit_logs a
+       LEFT JOIN users u ON u.id = a.user_id
+       ORDER BY a.occurred_at DESC, a.id DESC
+       LIMIT 100`
+    );
+    await recordAccessEvent(db, req, {
+      eventType: 'security_audit_view',
+      resourceType: 'audit_log',
+      resourceId: 'recent',
+    });
+    res.set('Cache-Control', 'no-store');
+    res.render('security_audit', { auditEvents: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Muestra las citas activas de hoy y limita a cada médico a sus propios pacientes.
+app.get('/appointments/today', requireRole('doctor'), async (req, res, next) => {
+  const roles = req.session.user.roles || [];
+  const doctorScoped = roles.includes('doctor');
+
+  try {
+    let effectiveDoctorId = null;
+    if (doctorScoped) {
+      const profileResult = await db.query(
+        'SELECT doctor_id FROM doctor_user_accounts WHERE user_id = $1',
+        [req.session.user.id]
+      );
+      if (!profileResult.rows.length) {
+        return res.status(403).send('Tu cuenta médica no tiene un perfil profesional vinculado.');
+      }
+      effectiveDoctorId = Number(req.session.user.id);
+    }
+
+    const { rows: citas } = await db.query(
+      `WITH clinic_today AS (
+         SELECT CURRENT_DATE AS appointment_day
+       )
+       SELECT a.id AS appointment_id, a.patient_id,
+              clinic_today.appointment_day::text AS today_date,
+              to_char(a.time_scheduled, 'HH24:MI') AS appointment_time,
+              a.status, a.reason_for_visit,
+              p.first_name, p.last_name, p.dni_document, p.document_type,
+              COALESCE(d.name, u.name, 'Médico no asociado') AS doctor_name
+       FROM clinic_today
+       JOIN appointments a ON a.appointment_date = clinic_today.appointment_day
+       JOIN patients p ON p.id = a.patient_id
+       JOIN users u ON u.id = a.doctor_id
+       LEFT JOIN doctor_user_accounts dua ON dua.user_id = u.id
+       LEFT JOIN doctors d ON d.id = dua.doctor_id
+       WHERE a.status <> 'Cancelled'
+         AND ($1::integer IS NULL OR a.doctor_id = $1)
+       ORDER BY a.time_scheduled ASC, p.last_name ASC, p.first_name ASC`,
+      [effectiveDoctorId]
+    );
+
+    await Promise.all(citas.map((cita) => recordAccessEvent(db, req, {
+      eventType: 'appointment_list_view',
+      resourceType: 'appointment',
+      resourceId: cita.appointment_id,
+      patientId: cita.patient_id,
+    })));
+
+    const todayDate = citas[0]?.today_date
+      || (await db.query('SELECT CURRENT_DATE::text AS today_date')).rows[0].today_date;
+    res.render('appointments_today', { citas, todayDate });
   } catch (error) {
     next(error);
   }
@@ -850,20 +915,31 @@ app.post(
 );
 app.post('/account/password-change/verify', passwordChangeVerifyRateLimit, verifyPasswordChange);
 
-app.use('/agenda', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'));
-app.use('/appointments', requireRole('system_admin', 'admissions', 'audit_security'));
-app.use('/api/doctor-availability', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'));
-app.use('/pacientes', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'));
-app.use('/api/patients', requireRole('system_admin', 'admissions', 'audit_security'));
+app.use('/agenda', requireRole('admissions'));
+app.use('/appointments', (req, res, next) => {
+  const isDoctorWorkflow = req.method === 'GET' && req.path === '/today';
+  return (isDoctorWorkflow
+    ? requireRole('doctor')
+    : requireRole('doctor', 'admissions'))(req, res, next);
+});
+app.use('/api/doctor-availability', requireRole('admissions'));
+app.use('/pacientes', requireRole('admissions', 'doctor'));
+app.use('/api/patients', (req, res, next) => {
+  const isPatientRead = req.method === 'GET'
+    || (req.method === 'POST' && req.path === '/search');
+  return (isPatientRead
+    ? requireRole('admissions', 'doctor')
+    : requireRole('admissions'))(req, res, next);
+});
 app.use('/patients', (req, res, next) => {
   const isPatientAdministration = req.method === 'POST'
     && (/^\/create\/?$/.test(req.path) || /^\/update\/\d+\/?$/.test(req.path));
   return isPatientAdministration
-    ? requireRole('system_admin', 'admissions', 'audit_security')(req, res, next)
-    : requireRole('system_admin', 'doctor', 'nurse', 'audit_security')(req, res, next);
+    ? requireRole('admissions')(req, res, next)
+    : requireRole('doctor')(req, res, next);
 });
 
-app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (req, res) => {
+app.get('/admin/users', requireRole('system_admin'), async (req, res) => {
   try {
     const isSystemAdmin = req.session.user.roles.includes('system_admin');
     const [rolesResult, doctorsResult, doctorAccountsResult, accountsResult] = await Promise.all([
@@ -942,7 +1018,7 @@ app.get('/admin/users', requireRole('system_admin', 'audit_security'), async (re
   }
 });
 
-app.post('/admin/users', requireRole('system_admin', 'audit_security'), async (req, res) => {
+app.post('/admin/users', requireRole('system_admin'), async (req, res) => {
   const { name, role_key: roleKey, doctor_id: doctorId } = req.body;
   const fullName = typeof name === 'string' ? name.trim() : '';
   const email = String(req.body.email || '').trim().toLowerCase();
@@ -1174,10 +1250,10 @@ const updateUserAccount = async (req, res) => {
   }
 };
 
-app.post('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), updateUserAccount);
-app.patch('/admin/users/:id/update', requireRole('system_admin', 'audit_security'), updateUserAccount);
+app.post('/admin/users/:id/update', requireRole('system_admin'), updateUserAccount);
+app.patch('/admin/users/:id/update', requireRole('system_admin'), updateUserAccount);
 
-app.post('/admin/users/link-doctor', requireRole('system_admin', 'audit_security'), async (req, res) => {
+app.post('/admin/users/link-doctor', requireRole('system_admin'), async (req, res) => {
   const doctorId = String(req.body.doctor_id || '');
   const userId = String(req.body.user_id || '');
   if (!/^[1-9]\d*$/.test(doctorId) || !/^[1-9]\d*$/.test(userId)) {
@@ -1233,10 +1309,21 @@ app.post('/admin/users/link-doctor', requireRole('system_admin', 'audit_security
 
 // RUTA VISUAL: Directorio de Pacientes
 app.get('/pacientes', async (req, res) => {
+  let filters;
   try {
-    const { rows } = await db.query('SELECT * FROM patients ORDER BY created_at DESC');
+    filters = normalizePatientDirectoryFilters(req.query);
+  } catch (error) {
+    return res.status(400).send(error.message);
+  }
+
+  try {
+    const { patients, hasNextPage } = await searchPatientDirectory(db, filters);
     res.render('patients', {
-      pacientes: rows,
+      pacientes: patients,
+      search: filters.search,
+      page: filters.page,
+      hasPreviousPage: filters.page > 1,
+      hasNextPage: hasNextPage && filters.page < MAX_PATIENT_DIRECTORY_PAGE,
       message: req.query.updated ? 'Los datos del paciente se actualizaron correctamente.' : null,
       error: req.query.error === 'duplicate'
         ? 'Ya existe un paciente registrado con ese documento.'
@@ -1394,25 +1481,229 @@ app.post('/patients/update/:id', async (req, res) => {
   }
 });
 
-app.get('/api/cie10/search', requireRole('system_admin', 'doctor', 'nurse', 'audit_security'), async (req, res) => {
-  const term = String(req.query.q || '').trim();
-  if (term.length < 2 || term.length > 80) {
-    return res.status(400).json({ error: 'Escribe al menos 2 caracteres para buscar un código CIE-10.' });
-  }
+app.get('/api/cie10/search', requireRole('doctor'), async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
-    const pattern = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
-    const { rows } = await db.query(
-      `SELECT code, description
-       FROM cie_catalog
-       WHERE code ILIKE $1 ESCAPE '\\' OR description ILIKE $1 ESCAPE '\\'
-       ORDER BY CASE WHEN code ILIKE $2 THEN 0 ELSE 1 END, code
-       LIMIT 12`,
-      [pattern, `${term}%`]
-    );
-    res.json(rows);
+    res.json(await searchCie10(db, req.query.q));
   } catch (error) {
+    if (error.name === 'InvalidCie10SearchError') {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error al buscar códigos CIE-10:', error.message);
     res.status(500).json({ error: 'No se pudo consultar el catálogo CIE-10.' });
+  }
+});
+
+const soapDraftFields = new Set([
+  'chief_complaint',
+  'current_illness',
+  'relevant_background',
+  'blood_pressure',
+  'heart_rate',
+  'temperature',
+  'weight',
+  'height',
+  'respiratory_rate',
+  'oxygen_saturation',
+  'objective',
+  'lab_results_summary',
+  'assessment',
+  'cie10_primary_code',
+  'cie10_primary_code_description',
+  'cie10_secondary_code',
+  'cie10_secondary_code_description',
+  'cie10_tertiary_code',
+  'cie10_tertiary_code_description',
+  'diagnostic_plan',
+  'study_priority',
+  'study_instructions',
+  'study_ids',
+  'plan',
+  'education_recommendations',
+  'follow_up_date',
+]);
+
+function parseSoapDraftConsultationId(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = String(value);
+  if (!/^[1-9]\d*$/.test(normalized)) throw new Error('El identificador de consulta no es válido.');
+  return Number(normalized);
+}
+
+function normalizeSoapDraftData(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('El borrador de evolución no tiene un formato válido.');
+  }
+
+  const unknownFields = Object.keys(value).filter((key) => !soapDraftFields.has(key));
+  if (unknownFields.length) throw new Error('El borrador contiene campos no permitidos.');
+
+  const draftData = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (key === 'study_ids') {
+      if (!Array.isArray(fieldValue) || fieldValue.length > 100
+          || fieldValue.some((id) => !/^[1-9]\d*$/.test(String(id)))) {
+        throw new Error('Las órdenes de estudios del borrador no son válidas.');
+      }
+      draftData.study_ids = [...new Set(fieldValue.map(String))];
+      continue;
+    }
+    if (typeof fieldValue !== 'string' || fieldValue.length > 10000) {
+      throw new Error(`El campo ${key} del borrador no es válido.`);
+    }
+    draftData[key] = fieldValue;
+  }
+
+  if (Buffer.byteLength(JSON.stringify(draftData), 'utf8') > 50000) {
+    throw new Error('El borrador supera el tamaño máximo permitido.');
+  }
+  return draftData;
+}
+
+// Lee exclusivamente el borrador SOAP que pertenece al médico autenticado.
+app.get('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+  const { patientId } = req.params;
+  if (!/^[1-9]\d*$/.test(patientId)) {
+    return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
+  }
+
+  let consultationId;
+  try {
+    consultationId = parseSoapDraftConsultationId(req.query.consultation_id);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  res.set('Cache-Control', 'no-store');
+  try {
+    const { rows } = await db.query(
+      `SELECT draft_data, updated_at
+       FROM soap_note_drafts
+       WHERE patient_id = $1 AND user_id = $2
+         AND consultation_id IS NOT DISTINCT FROM $3::integer`,
+      [Number(patientId), Number(req.session.user.id), consultationId]
+    );
+    if (!rows.length) return res.json({ draft: null });
+
+    await recordAccessEvent(db, req, {
+      eventType: 'clinical_soap_draft_restored',
+      resourceType: 'patient',
+      resourceId: patientId,
+      patientId,
+    });
+    res.json({ draft: rows[0].draft_data, updated_at: rows[0].updated_at });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Guarda el borrador SOAP sin incorporarlo a la historia clínica definitiva.
+app.put('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+  const { patientId } = req.params;
+  if (!/^[1-9]\d*$/.test(patientId)) {
+    return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
+  }
+
+  let consultationId;
+  let draftData;
+  try {
+    consultationId = parseSoapDraftConsultationId(req.body?.consultation_id);
+    draftData = normalizeSoapDraftData(req.body?.data);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const patient = await client.query('SELECT id FROM patients WHERE id = $1', [Number(patientId)]);
+    if (!patient.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No se encontró el paciente.' });
+    }
+    if (consultationId !== null) {
+      const consultation = await client.query(
+        'SELECT id FROM medical_consultations WHERE id = $1 AND patient_id = $2',
+        [consultationId, Number(patientId)]
+      );
+      if (!consultation.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'No se encontró la consulta para este paciente.' });
+      }
+    }
+
+    const conflictTarget = consultationId === null
+      ? '(patient_id, user_id) WHERE consultation_id IS NULL'
+      : '(patient_id, user_id, consultation_id) WHERE consultation_id IS NOT NULL';
+    await client.query(
+      `INSERT INTO soap_note_drafts
+         (patient_id, user_id, consultation_id, draft_data)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT ${conflictTarget}
+       DO UPDATE SET draft_data = EXCLUDED.draft_data,
+                     updated_at = CURRENT_TIMESTAMP`,
+      [Number(patientId), Number(req.session.user.id), consultationId, JSON.stringify(draftData)]
+    );
+    await recordAccessEvent(client, req, {
+      eventType: 'clinical_soap_draft_saved',
+      resourceType: 'patient',
+      resourceId: patientId,
+      patientId,
+      details: { consultationId },
+    });
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store').json({ saved: true, updated_at: new Date().toISOString() });
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir el guardado del borrador SOAP:', rollbackError.message);
+    });
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+// Elimina únicamente el borrador del paciente y consulta del médico actual.
+app.delete('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+  const { patientId } = req.params;
+  if (!/^[1-9]\d*$/.test(patientId)) {
+    return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
+  }
+
+  let consultationId;
+  try {
+    consultationId = parseSoapDraftConsultationId(req.query.consultation_id);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `DELETE FROM soap_note_drafts
+       WHERE patient_id = $1 AND user_id = $2
+         AND consultation_id IS NOT DISTINCT FROM $3::integer`,
+      [Number(patientId), Number(req.session.user.id), consultationId]
+    );
+    if (result.rowCount) {
+      await recordAccessEvent(client, req, {
+        eventType: 'clinical_soap_draft_discarded',
+        resourceType: 'patient',
+        resourceId: patientId,
+        patientId,
+        details: { consultationId },
+      });
+    }
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store').json({ deleted: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch((rollbackError) => {
+      console.error('Error al revertir el borrado del borrador SOAP:', rollbackError.message);
+    });
+    next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -1423,13 +1714,57 @@ app.get('/api/cie10/search', requireRole('system_admin', 'doctor', 'nurse', 'aud
 app.get('/patients/:id/history', async (req, res) => {
   const patientId = req.params.id;
   try {
+    res.set('Cache-Control', 'no-store');
+    if (!/^[1-9]\d*$/.test(patientId)) return res.status(400).send('Identificador de paciente no válido.');
     const patientResult = await db.query('SELECT * FROM patients WHERE id = $1', [patientId]);
     if (patientResult.rows.length === 0) return res.status(404).send('Paciente no encontrado');
     const paciente = patientResult.rows[0];
+    let selectedAppointmentId = '';
+    let selectedAppointmentConsultationId = '';
+    if (req.query.startSoap === '1' && req.query.appointment_id !== undefined) {
+      const appointmentId = String(req.query.appointment_id);
+      if (!/^[1-9]\d*$/.test(appointmentId) || !(req.session.user.roles || []).includes('doctor')) {
+        return res.status(400).send('La cita seleccionada no es válida para iniciar una evolución.');
+      }
+      const eligibleAppointment = await findEligibleTodaysSoapAppointment(db, {
+        appointmentId,
+        patientId,
+        doctorId: req.session.user.id,
+      });
+      if (!eligibleAppointment) {
+        return res.status(404).send('La cita no existe, no corresponde al paciente o no está asignada a tu cuenta.');
+      }
+      selectedAppointmentId = appointmentId;
+      const existingConsultation = await db.query(
+        `SELECT id FROM medical_consultations
+         WHERE appointment_id = $1 AND patient_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [Number(appointmentId), Number(patientId)]
+      );
+      selectedAppointmentConsultationId = existingConsultation.rows[0]?.id || '';
+    }
+    if ((req.session.user.roles || []).includes('doctor') && !selectedAppointmentId) {
+      const eligibleAppointment = await findEligibleTodaysSoapAppointment(db, {
+        patientId,
+        doctorId: req.session.user.id,
+      });
+      if (eligibleAppointment) {
+        selectedAppointmentId = String(eligibleAppointment.id);
+        const existingConsultation = await db.query(
+          `SELECT id FROM medical_consultations
+           WHERE appointment_id = $1 AND patient_id = $2
+           ORDER BY created_at DESC LIMIT 1`,
+          [eligibleAppointment.id, Number(patientId)]
+        );
+        selectedAppointmentConsultationId = existingConsultation.rows[0]?.id || '';
+      }
+    }
 
     const queryHistorial = `
       SELECT 
-        mc.id, mc.created_at AS consultation_date,
+        mc.id, mc.appointment_id, mc.created_at AS consultation_date,
+        mc.soap_last_saved_at,
+        mc.soap_last_saved_at > CURRENT_TIMESTAMP - ($2 * INTERVAL '1 hour') AS soap_editable,
         ss.subjective_text AS subjective,
         ss.chief_complaint, ss.current_illness, ss.relevant_background,
         so.blood_pressure, so.heart_rate, so.temperature, so.weight, so.height, so.bmi, so.bmi_status,
@@ -1453,7 +1788,7 @@ app.get('/patients/:id/history', async (req, res) => {
       WHERE mc.patient_id = $1
       ORDER BY mc.created_at DESC
     `;
-    const notesResult = await db.query(queryHistorial, [patientId]);
+    const notesResult = await db.query(queryHistorial, [patientId, SOAP_EDIT_WINDOW_HOURS]);
     const studyCatalogResult = await db.query(
       'SELECT id, code, name, category FROM study_catalog WHERE active = TRUE ORDER BY category, name'
     );
@@ -1462,18 +1797,32 @@ app.get('/patients/:id/history', async (req, res) => {
        FROM medications WHERE active = TRUE ORDER BY name, strength NULLS LAST`
     );
 
+    const legacyReferences = new Map();
+    for (const row of notesResult.rows) {
+      const legacy = parseLegacyCie10Reference(row.assessment);
+      row.assessment = legacy.assessment;
+      if (legacy.code) legacyReferences.set(row.id, legacy.code);
+    }
+    const legacyCatalogByCode = new Map();
+    const legacyCodes = [...new Set(legacyReferences.values())];
+    if (legacyCodes.length) {
+      const { rows: legacyDiagnoses } = await db.query(
+        `SELECT upper(code) AS code, description
+         FROM cie_catalog WHERE upper(code) = ANY($1::text[])`,
+        [legacyCodes]
+      );
+      legacyDiagnoses.forEach((diagnosis) => legacyCatalogByCode.set(diagnosis.code, diagnosis));
+    }
+
     const notas = notesResult.rows.map(row => {
-      let legacyCode = '';
-      let legacyDescription = '';
-      if (row.assessment && row.assessment.includes('| Ref. CIE-10:')) {
-        const parts = row.assessment.split('| Ref. CIE-10:');
-        row.assessment = parts[0].trim();
-        const cieParts = parts[1].split('-');
-        legacyCode = cieParts[0] ? cieParts[0].trim() : '';
-        legacyDescription = cieParts[1] ? cieParts.slice(1).join('-').trim() : '';
-      }
+      const legacyCode = row.primary_cie_code ? '' : legacyReferences.get(row.id) || '';
+      const legacyDiagnosis = legacyCode ? legacyCatalogByCode.get(legacyCode) : null;
       const diagnoses = [
-        { type: 'Principal', code: row.primary_cie_code || (legacyCode === 'S/D' ? '' : legacyCode), description: row.primary_cie_description || legacyDescription },
+        {
+          type: 'Principal',
+          code: row.primary_cie_code || legacyDiagnosis?.code || '',
+          description: row.primary_cie_description || legacyDiagnosis?.description || '',
+        },
         { type: 'Secundario', code: row.secondary_cie_code, description: row.secondary_cie_description },
         { type: 'Tercero', code: row.tertiary_cie_code, description: row.tertiary_cie_description },
       ].filter(diagnosis => diagnosis.code);
@@ -1569,6 +1918,8 @@ app.get('/patients/:id/history', async (req, res) => {
     res.render('history', {
       paciente,
       notas,
+      selectedAppointmentId,
+      selectedAppointmentConsultationId,
       studyCatalog: studyCatalogResult.rows,
       medicationCatalog: medicationCatalogResult.rows,
     });
@@ -1578,10 +1929,308 @@ app.get('/patients/:id/history', async (req, res) => {
   }
 });
 
+// Issues an email OTP bound to the authenticated doctor, patient, consultation, and SOAP payload.
+app.post(
+  '/patients/:patientId/consultations/:consultId/soap-edit-otp/request',
+  soapEditOtpRequestRateLimit,
+  requireRole('doctor'),
+  async (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    const { patientId, consultId } = req.params;
+    const input = req.body?.soap_data;
+    if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(consultId)) {
+      return res.status(400).json({ error: 'Identificador de paciente o consulta no válido.' });
+    }
+
+    let payloadHash;
+    try {
+      payloadHash = hashSoapEditPayload(input);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    const challengeId = crypto.randomUUID();
+    const code = generateOtp();
+    const userId = Number(req.session.user.id);
+    const client = await db.connect();
+    let doctor;
+    let expiresAt;
+    try {
+      await client.query('BEGIN');
+      const doctorResult = await client.query(
+        `SELECT u.id, u.name, u.email
+         FROM users u
+         WHERE u.id = $1 AND u.active = TRUE
+           AND EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = u.id AND r.role_key = 'doctor' AND r.active = TRUE
+           )
+         FOR UPDATE`,
+        [userId]
+      );
+      if (!doctorResult.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Solo una cuenta médica activa puede modificar notas SOAP.' });
+      }
+      doctor = doctorResult.rows[0];
+      if (!doctor.email) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'La cuenta médica no tiene un correo registrado para la verificación.' });
+      }
+
+      const consultationResult = await client.query(
+        `SELECT mc.id, mc.soap_last_saved_at, clock_timestamp() AS database_now
+         FROM medical_consultations mc
+         WHERE mc.id = $1 AND mc.patient_id = $2
+         FOR UPDATE`,
+        [Number(consultId), Number(patientId)]
+      );
+      if (!consultationResult.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'No se encontró la nota SOAP del paciente.' });
+      }
+      if (!isSoapEditWindowOpen(
+        consultationResult.rows[0].soap_last_saved_at,
+        consultationResult.rows[0].database_now
+      )) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.',
+        });
+      }
+
+      const existingChallenge = await client.query(
+        `SELECT resend_after > CURRENT_TIMESTAMP AS is_cooling_down
+         FROM soap_edit_otp_challenges
+         WHERE user_id = $1 AND consultation_id = $2
+         FOR UPDATE`,
+        [userId, Number(consultId)]
+      );
+      if (existingChallenge.rows[0]?.is_cooling_down) {
+        await client.query('ROLLBACK');
+        return res.status(429).json({ error: 'Espera antes de solicitar otro código de verificación.' });
+      }
+
+      const challengeResult = await client.query(
+        `INSERT INTO soap_edit_otp_challenges
+           (challenge_id, patient_id, consultation_id, user_id, otp_hash, payload_hash,
+            attempts, expires_at, resend_after, verified_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 0,
+                 CURRENT_TIMESTAMP + ($7 * INTERVAL '1 minute'),
+                 CURRENT_TIMESTAMP + ($8 * INTERVAL '1 second'), NULL)
+         ON CONFLICT (user_id, consultation_id) DO UPDATE
+         SET challenge_id = EXCLUDED.challenge_id,
+             patient_id = EXCLUDED.patient_id,
+             otp_hash = EXCLUDED.otp_hash,
+             payload_hash = EXCLUDED.payload_hash,
+             attempts = 0,
+             expires_at = EXCLUDED.expires_at,
+             resend_after = EXCLUDED.resend_after,
+             verified_at = NULL,
+             created_at = CURRENT_TIMESTAMP
+         RETURNING expires_at`,
+        [
+          challengeId,
+          Number(patientId),
+          Number(consultId),
+          userId,
+          hashOtp(code, sessionSecret),
+          payloadHash,
+          OTP_TTL_MINUTES,
+          OTP_RESEND_COOLDOWN_SECONDS,
+        ]
+      );
+      expiresAt = new Date(challengeResult.rows[0].expires_at);
+      await recordAccessEvent(client, req, {
+        eventType: 'soap_edit_otp_requested',
+        resourceType: 'consultation',
+        resourceId: consultId,
+        patientId,
+        userId,
+        details: { verification: 'email_otp' },
+      });
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch((rollbackError) => {
+        console.error('Error al revertir la solicitud OTP de edición SOAP:', rollbackError.message);
+      });
+      return next(error);
+    } finally {
+      client.release();
+    }
+
+    try {
+      await sendSoapModificationOtp({
+        to: doctor.email,
+        name: doctor.name,
+        code,
+        expiresMinutes: OTP_TTL_MINUTES,
+      });
+    } catch (error) {
+      await db.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId])
+        .catch((cleanupError) => console.error('No se pudo limpiar el desafío OTP SOAP:', cleanupError.message));
+      await recordAccessEvent(db, req, {
+        eventType: 'soap_edit_otp_email_failed',
+        resourceType: 'consultation',
+        resourceId: consultId,
+        patientId,
+        userId,
+        details: { verification: 'email_otp' },
+      }).catch((auditError) => console.error('No se pudo auditar el fallo de correo OTP SOAP:', auditError.message));
+      console.error('No se pudo enviar el OTP para modificar una nota SOAP:', error.message);
+      return res.status(503).json({ error: 'No se pudo enviar el código. Inténtalo nuevamente o contacta al administrador.' });
+    }
+
+    req.session.soapEditChallengeId = challengeId;
+    return res.json({
+      challengeId,
+      maskedEmail: maskEmail(doctor.email),
+      expiresAt: expiresAt.toISOString(),
+    });
+  }
+);
+
+// Verifies the doctor OTP and marks the session-bound SOAP edit challenge as ready for one save.
+app.post(
+  '/patients/:patientId/consultations/:consultId/soap-edit-otp/verify',
+  otpVerifyRateLimit,
+  requireRole('doctor'),
+  async (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    const { patientId, consultId } = req.params;
+    const challengeId = req.session.soapEditChallengeId;
+    const code = typeof req.body?.otp === 'string' ? req.body.otp : '';
+    if (!/^[1-9]\d*$/.test(patientId)
+        || !/^[1-9]\d*$/.test(consultId)
+        || !challengeId
+        || !/^[0-9a-f-]{36}$/i.test(challengeId)
+        || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'El código de verificación no es válido.' });
+    }
+
+    const userId = Number(req.session.user.id);
+    const client = await db.connect();
+    let failure = null;
+    try {
+      await client.query('BEGIN');
+      const challengeResult = await client.query(
+        `SELECT c.otp_hash, c.attempts, c.verified_at,
+                c.expires_at > CURRENT_TIMESTAMP AS is_unexpired,
+                mc.soap_last_saved_at,
+                clock_timestamp() AS database_now,
+                u.active,
+                EXISTS (
+                  SELECT 1 FROM user_roles ur
+                  JOIN roles r ON r.id = ur.role_id
+                  WHERE ur.user_id = u.id AND r.role_key = 'doctor' AND r.active = TRUE
+                ) AS is_doctor
+         FROM soap_edit_otp_challenges c
+         JOIN users u ON u.id = c.user_id
+         JOIN medical_consultations mc
+           ON mc.id = c.consultation_id AND mc.patient_id = c.patient_id
+         WHERE c.challenge_id = $1
+           AND c.user_id = $2 AND c.patient_id = $3 AND c.consultation_id = $4
+         FOR UPDATE OF c, u`,
+        [challengeId, userId, Number(patientId), Number(consultId)]
+      );
+
+      if (!challengeResult.rowCount || !challengeResult.rows[0].active || !challengeResult.rows[0].is_doctor) {
+        failure = 'challenge_missing';
+      } else {
+        const challenge = challengeResult.rows[0];
+        if (!isSoapEditWindowOpen(challenge.soap_last_saved_at, challenge.database_now)) {
+          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
+          failure = 'window_closed';
+        } else if (challenge.verified_at) {
+          // A repeated verify request is idempotent if the original response was lost.
+        } else if (!challenge.is_unexpired) {
+          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
+          failure = 'expired';
+        } else if (Number(challenge.attempts) >= OTP_MAX_ATTEMPTS) {
+          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
+          failure = 'locked';
+        } else if (!otpMatches(code, challenge.otp_hash, sessionSecret)) {
+          const attemptsResult = await client.query(
+            `UPDATE soap_edit_otp_challenges
+             SET attempts = attempts + 1
+             WHERE challenge_id = $1
+             RETURNING attempts`,
+            [challengeId]
+          );
+          if (Number(attemptsResult.rows[0].attempts) >= OTP_MAX_ATTEMPTS) {
+            await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
+            failure = 'locked';
+          } else {
+            failure = 'invalid';
+          }
+        } else {
+          await client.query(
+            'UPDATE soap_edit_otp_challenges SET verified_at = CURRENT_TIMESTAMP WHERE challenge_id = $1',
+            [challengeId]
+          );
+        }
+      }
+
+      if (failure) {
+        await recordAccessEvent(client, req, {
+          eventType: 'soap_edit_otp_failed',
+          resourceType: 'consultation',
+          resourceId: consultId,
+          patientId,
+          userId,
+          details: { reason: failure },
+        });
+      } else {
+        await recordAccessEvent(client, req, {
+          eventType: 'soap_edit_otp_verified',
+          resourceType: 'consultation',
+          resourceId: consultId,
+          patientId,
+          userId,
+          details: { verification: 'email_otp' },
+        });
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch((rollbackError) => {
+        console.error('Error al revertir la verificación OTP SOAP:', rollbackError.message);
+      });
+      return next(error);
+    } finally {
+      client.release();
+    }
+
+    if (failure) {
+      if (failure === 'expired' || failure === 'locked'
+          || failure === 'challenge_missing' || failure === 'window_closed') {
+        delete req.session.soapEditChallengeId;
+      }
+      const status = failure === 'invalid' ? 400
+        : failure === 'locked' ? 429
+          : failure === 'window_closed' ? 409 : 410;
+      return res.status(status).json({
+        error: failure === 'invalid'
+          ? 'El código ingresado es incorrecto.'
+          : failure === 'window_closed'
+            ? 'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.'
+          : failure === 'expired'
+            ? 'El código venció. Solicita uno nuevo.'
+            : failure === 'locked'
+              ? 'Se agotaron los intentos. Solicita un nuevo código.'
+              : 'El desafío ya fue utilizado o dejó de estar disponible.',
+      });
+    }
+    return res.json({ verified: true, challengeId });
+  }
+);
+
 app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
   const patientId = req.params.id;
   const {
     consultation_id,
+    appointment_id,
+    soap_edit_challenge_id: soapEditChallengeId,
     chief_complaint, current_illness, relevant_background, subjective,
     objective, assessment, plan, diagnostic_plan, therapeutic_plan,
     education_recommendations, follow_up_date, lab_results_summary,
@@ -1595,8 +2244,10 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
     return res.status(400).send(error.message);
   }
 
-  if (!/^\d+$/.test(patientId) || (consultation_id && !/^\d+$/.test(consultation_id))) {
-    return res.status(400).send('Identificador de paciente o consulta no válido.');
+  if (!/^[1-9]\d*$/.test(patientId)
+      || (consultation_id && !/^[1-9]\d*$/.test(consultation_id))
+      || (appointment_id && !/^[1-9]\d*$/.test(appointment_id))) {
+    return res.status(400).send('Identificador de paciente, cita o consulta no válido.');
   }
   let diagnosisCodes;
   try {
@@ -1618,22 +2269,173 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
     await client.query('BEGIN');
 
     let consultId = consultation_id;
+    let isExistingConsultation = Boolean(consultation_id);
+
+    if (!consultId && !appointment_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).send('Para iniciar una evolución se requiere una cita activa del día de hoy.');
+    }
+
+    if (appointment_id) {
+      if (!consultId) {
+        const eligibleAppointment = await findEligibleTodaysSoapAppointment(client, {
+          appointmentId: appointment_id,
+          patientId,
+          doctorId: req.session.user.id,
+          lock: true,
+        });
+        if (!eligibleAppointment) {
+          await client.query('ROLLBACK');
+          return res.status(409).send(
+            'Solo puedes iniciar una evolución con una cita de hoy asignada a tu cuenta y en estado agendada, en espera o en consulta.'
+          );
+        }
+      } else {
+        const appointmentResult = await client.query(
+          `SELECT id, status
+           FROM appointments
+           WHERE id = $1 AND patient_id = $2 AND doctor_id = $3
+             AND status <> 'Cancelled'
+           FOR UPDATE`,
+          [Number(appointment_id), Number(patientId), Number(req.session.user.id)]
+        );
+        if (!appointmentResult.rowCount) {
+          await client.query('ROLLBACK');
+          return res.status(404).send('La cita no existe, no corresponde al paciente o no está asignada a tu cuenta.');
+        }
+      }
+      if (!consultId) {
+        const existingConsultation = await client.query(
+          `SELECT id FROM medical_consultations
+           WHERE appointment_id = $1 AND patient_id = $2
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [Number(appointment_id), Number(patientId)]
+        );
+        consultId = existingConsultation.rows[0]?.id;
+        isExistingConsultation = Boolean(consultId);
+      } else {
+        const linkedConsultation = await client.query(
+          `SELECT id FROM medical_consultations
+           WHERE id = $1 AND patient_id = $2 AND appointment_id = $3
+           FOR UPDATE`,
+          [Number(consultId), Number(patientId), Number(appointment_id)]
+        );
+        if (!linkedConsultation.rowCount) {
+          await client.query('ROLLBACK');
+          return res.status(404).send('La consulta no está vinculada a la cita seleccionada.');
+        }
+      }
+    }
 
     if (!consultId) {
-      const consultRes = await client.query(
-        'INSERT INTO medical_consultations (patient_id) VALUES ($1) RETURNING id',
-        [patientId]
-      );
+      const consultRes = appointment_id
+        ? await client.query(
+          'INSERT INTO medical_consultations (patient_id, appointment_id) VALUES ($1, $2) RETURNING id',
+          [Number(patientId), Number(appointment_id)]
+        )
+        : await client.query(
+          'INSERT INTO medical_consultations (patient_id) VALUES ($1) RETURNING id',
+          [Number(patientId)]
+        );
       consultId = consultRes.rows[0].id;
     } else {
       const existingConsultation = await client.query(
-        'SELECT id FROM medical_consultations WHERE id = $1 AND patient_id = $2 FOR UPDATE',
+        `SELECT id, soap_last_saved_at, clock_timestamp() AS database_now
+         FROM medical_consultations
+         WHERE id = $1 AND patient_id = $2
+         FOR UPDATE`,
         [consultId, patientId]
       );
       if (existingConsultation.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).send('Consulta no encontrada para este paciente.');
       }
+      isExistingConsultation = true;
+      if (!isSoapEditWindowOpen(
+        existingConsultation.rows[0].soap_last_saved_at,
+        existingConsultation.rows[0].database_now
+      )) {
+        await client.query('ROLLBACK');
+        delete req.session.soapEditChallengeId;
+        return res.status(409).send(
+          'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.'
+        );
+      }
+    }
+
+    let soapEditChallenge = null;
+    let doctorName = null;
+    let previousSoapValues = null;
+    if (isExistingConsultation) {
+      if (!soapEditChallengeId
+          || soapEditChallengeId !== req.session.soapEditChallengeId
+          || !/^[0-9a-f-]{36}$/i.test(soapEditChallengeId)) {
+        await client.query('ROLLBACK');
+        return res.status(403).send('Verifica el código enviado a tu correo antes de modificar esta nota SOAP.');
+      }
+      const doctorResult = await client.query(
+        `SELECT u.name
+         FROM users u
+         WHERE u.id = $1 AND u.active = TRUE
+           AND EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = u.id AND r.role_key = 'doctor' AND r.active = TRUE
+           )
+         FOR UPDATE`,
+        [Number(req.session.user.id)]
+      );
+      if (!doctorResult.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(403).send('Solo una cuenta médica activa puede modificar notas SOAP.');
+      }
+      doctorName = doctorResult.rows[0].name;
+
+      const challengeResult = await client.query(
+        `SELECT payload_hash
+         FROM soap_edit_otp_challenges
+         WHERE challenge_id = $1 AND user_id = $2
+           AND patient_id = $3 AND consultation_id = $4
+           AND verified_at IS NOT NULL AND expires_at > CURRENT_TIMESTAMP
+           AND attempts < $5
+         FOR UPDATE`,
+        [
+          soapEditChallengeId,
+          Number(req.session.user.id),
+          Number(patientId),
+          Number(consultId),
+          OTP_MAX_ATTEMPTS,
+        ]
+      );
+      if (!challengeResult.rowCount
+          || challengeResult.rows[0].payload_hash !== hashSoapEditPayload(req.body)) {
+        await client.query('ROLLBACK');
+        return res.status(403).send('La verificación OTP expiró o los datos cambiaron. Solicita un nuevo código.');
+      }
+      soapEditChallenge = challengeResult.rows[0];
+
+      const previousValuesResult = await client.query(
+        `SELECT ss.chief_complaint, ss.current_illness, ss.relevant_background,
+                so.blood_pressure, so.heart_rate, so.temperature, so.weight, so.height,
+                so.respiratory_rate, so.oxygen_saturation, so.objective_text AS objective,
+                so.lab_results_summary, sa.assessment_text AS assessment,
+                c1.code AS cie10_primary_code,
+                c2.code AS cie10_secondary_code,
+                c3.code AS cie10_tertiary_code,
+                sp.diagnostic_plan, sp.therapeutic_plan, sp.plan_text AS plan,
+                sp.education_recommendations, sp.follow_up_date::text AS follow_up_date
+         FROM medical_consultations mc
+         LEFT JOIN soap_subjective ss ON ss.medical_consultations_id = mc.id
+         LEFT JOIN soap_objective so ON so.medical_consultations_id = mc.id
+         LEFT JOIN soap_assessment sa ON sa.medical_consultations_id = mc.id
+         LEFT JOIN cie_catalog c1 ON c1.id = sa.primary_cie_id
+         LEFT JOIN cie_catalog c2 ON c2.id = sa.secondary_cie_1_id
+         LEFT JOIN cie_catalog c3 ON c3.id = sa.secondary_cie_2_id
+         LEFT JOIN soap_plan sp ON sp.medical_consultations_id = mc.id
+         WHERE mc.id = $1 AND mc.patient_id = $2`,
+        [Number(consultId), Number(patientId)]
+      );
+      previousSoapValues = previousValuesResult.rows[0] || {};
     }
 
     const subjectiveFields = [
@@ -1693,16 +2495,37 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
       ]
     );
 
-    const diagnosisLookup = await client.query(
-      'SELECT id, code, description FROM cie_catalog WHERE upper(code) = ANY($1::text[])',
-      [diagnosisCodes.filter(Boolean)]
-    );
-    const diagnosisByCode = new Map(diagnosisLookup.rows.map(row => [row.code.toUpperCase(), row]));
-    const unknownCodes = diagnosisCodes.filter(code => code && !diagnosisByCode.has(code));
+    const { diagnosisByCode, unknownCodes } = await lookupDiagnosisCodes(client, diagnosisCodes);
     if (unknownCodes.length) {
       await client.query('ROLLBACK');
       return res.status(400).send(`Código(s) CIE-10 no encontrado(s): ${unknownCodes.join(', ')}.`);
     }
+    const assessmentFull = String(assessment || 'Sin análisis');
+    const soapAuditChanges = isExistingConsultation
+      ? buildSoapAuditChanges(previousSoapValues, {
+        chief_complaint: normalizedChiefComplaint,
+        current_illness: normalizedCurrentIllness,
+        relevant_background: normalizedRelevantBackground,
+        blood_pressure: blood_pressure || null,
+        heart_rate: heart_rate || null,
+        temperature: temperature || null,
+        weight: weight || null,
+        height: height || null,
+        respiratory_rate: respiratory_rate || null,
+        oxygen_saturation: oxygen_saturation || null,
+        objective: objective || '',
+        lab_results_summary: lab_results_summary || null,
+        assessment: assessmentFull,
+        cie10_primary_code: diagnosisCodes[0] || null,
+        cie10_secondary_code: diagnosisCodes[1] || null,
+        cie10_tertiary_code: diagnosisCodes[2] || null,
+        diagnostic_plan: diagnostic_plan || null,
+        therapeutic_plan: therapeutic_plan || plan || null,
+        plan: plan || therapeutic_plan || 'Sin indicaciones',
+        education_recommendations: education_recommendations || null,
+        follow_up_date: follow_up_date || null,
+      })
+      : [];
     if (studyOrderInput.studyIds.length) {
       const activeStudies = await client.query(
         'SELECT id FROM study_catalog WHERE id = ANY($1::int[]) AND active = TRUE FOR SHARE',
@@ -1729,7 +2552,6 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
         ]
       );
     }
-    const assessmentFull = String(assessment || 'Sin análisis');
     await client.query(
       `INSERT INTO soap_assessment
        (medical_consultations_id, assessment_text, primary_cie_id, secondary_cie_1_id, secondary_cie_2_id)
@@ -1761,7 +2583,7 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
          updated_at = CURRENT_TIMESTAMP`,
       [
         consultId, plan || therapeutic_plan || 'Sin indicaciones',
-        diagnostic_plan || null, therapeutic_plan || null,
+        diagnostic_plan || null, therapeutic_plan || plan || null,
         education_recommendations || null, follow_up_date || null,
       ]
     );
@@ -1773,7 +2595,53 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
       patientId,
       details: { study_order_count: studyOrderInput.studyIds.length },
     });
+    for (const change of soapAuditChanges) {
+      await client.query(
+        `INSERT INTO soap_audit_logs
+           (consultation_id, field_name, previous_value, new_value,
+            user_id, user_name, ip_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          Number(consultId),
+          change.fieldName,
+          change.previousValue === null ? null : String(change.previousValue),
+          change.newValue === null ? null : String(change.newValue),
+          Number(req.session.user.id),
+          doctorName,
+          net.isIP(req.ip || '') ? req.ip : null,
+        ]
+      );
+    }
+    if (soapEditChallenge) {
+      await client.query(
+        'DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1',
+        [soapEditChallengeId]
+      );
+      await recordAccessEvent(client, req, {
+        eventType: 'clinical_soap_modified',
+        resourceType: 'consultation',
+        resourceId: consultId,
+        patientId,
+        details: {
+          verification: 'email_otp',
+          changed_fields: soapAuditChanges.map((change) => change.fieldName),
+        },
+      });
+    }
+    await client.query(
+      `UPDATE medical_consultations
+       SET soap_last_saved_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND patient_id = $2`,
+      [Number(consultId), Number(patientId)]
+    );
+    await client.query(
+      `DELETE FROM soap_note_drafts
+       WHERE patient_id = $1 AND user_id = $2
+         AND consultation_id IS NOT DISTINCT FROM $3::integer`,
+      [Number(patientId), Number(req.session.user.id), parseSoapDraftConsultationId(consultation_id)]
+    );
     await client.query('COMMIT');
+    if (soapEditChallenge) delete req.session.soapEditChallengeId;
     res.redirect(`/patients/${patientId}/history`);
 
   } catch (err) {
@@ -2044,7 +2912,7 @@ app.post('/admin/medications/:id', requireRole('system_admin'), async (req, res)
 // 2. MÓDULO: PRESCRIPCIÓN MÉDICA (PDF)
 // ==========================================
 
-app.get('/patients/:patientId/prescriptions/:prescriptionId/pdf', requireRole('doctor', 'system_admin', 'audit_security'), async (req, res) => {
+app.get('/patients/:patientId/prescriptions/:prescriptionId/pdf', requireRole('doctor'), async (req, res) => {
   const { patientId, prescriptionId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(prescriptionId)) {
     return res.status(400).send('Identificador de paciente o receta no válido.');
@@ -2185,6 +3053,18 @@ app.get('/patients/:patientId/full-history/:consultId', async (req, res) => {
     });
 
     const data = rows[0];
+    const legacyDiagnosis = parseLegacyCie10Reference(data.assessment_text);
+    data.assessment_text = legacyDiagnosis.assessment;
+    if (!data.primary_cie_code && legacyDiagnosis.code) {
+      const { rows: legacyDiagnoses } = await db.query(
+        `SELECT code, description FROM cie_catalog WHERE upper(code) = $1 LIMIT 1`,
+        [legacyDiagnosis.code]
+      );
+      if (legacyDiagnoses[0]) {
+        data.primary_cie_code = legacyDiagnoses[0].code;
+        data.primary_cie_description = legacyDiagnoses[0].description;
+      }
+    }
     const { rows: studyOrders } = await db.query(
       `SELECT sc.name, sc.category, so.priority, so.status, so.instructions
        FROM study_orders so
@@ -2245,7 +3125,8 @@ app.get('/patients/:patientId/full-history/:consultId', async (req, res) => {
       ['Secundario', data.secondary_cie_code, data.secondary_cie_description],
       ['Tercero', data.tertiary_cie_code, data.tertiary_cie_description],
     ].filter(([, code]) => code).forEach(([type, code, description]) => {
-      doc.text(`Diagnóstico ${type}: ${code} — ${description || ''}`);
+      const diagnosisLabel = formatDiagnosisLabel(code, description);
+      if (diagnosisLabel) doc.text(`Diagnóstico ${type}: ${diagnosisLabel}`);
     });
 
     doc.moveDown(1.5);
@@ -2310,7 +3191,7 @@ app.get('/agenda', async (req, res) => {
     }
     const doctorProfileId = doctorScoped ? doctorProfileResult.rows[0].doctor_id : null;
     const queryCitas = `
-      SELECT a.id, a.appointment_date, a.status, a.reason_for_visit, a.time_scheduled,
+      SELECT a.id, a.patient_id, a.appointment_date, a.status, a.reason_for_visit, a.time_scheduled,
              a.duration_minutes, a.care_mode,
              p.first_name, p.last_name, p.dni_document, u.name AS doctor_name
       FROM appointments a
@@ -2362,7 +3243,7 @@ app.get('/agenda', async (req, res) => {
 });
 
 // ENDPOINT API: Entrega los eventos del calendario dentro de un rango acotado.
-app.get('/api/calendar/appointments', requireRole('system_admin', 'admissions', 'audit_security', 'doctor', 'nurse'), async (req, res) => {
+app.get('/api/calendar/appointments', requireRole('admissions'), async (req, res) => {
   const { start, end } = req.query;
   const roles = req.session.user.roles || [];
   const doctorScoped = isDoctorCalendarScoped(roles);
@@ -2491,12 +3372,16 @@ app.get('/api/doctor-availability', async (req, res) => {
 });
 
 // ENDPOINT POST: Actualizar estado de la cita y capturar métricas de tiempo
-app.post('/appointments/:id/status', async (req, res) => {
+app.post('/appointments/:id/status', requireRole('doctor', 'admissions'), async (req, res) => {
   const appointmentId = req.params.id;
   const { status } = req.body;
+  const wantsJson = req.is('application/json')
+    || (req.get('accept') || '').includes('application/json');
   const allowedStatuses = ['Waiting Room', 'In Consultation', 'Attended', 'Cancelled'];
   if (!/^[1-9]\d*$/.test(appointmentId) || !allowedStatuses.includes(status)) {
-    return res.status(400).send('Identificador o estado de cita no válido.');
+    return wantsJson
+      ? res.status(400).json({ error: 'Identificador o estado de cita no válido.' })
+      : res.status(400).send('Identificador o estado de cita no válido.');
   }
   let timeColumnUpdate = '';
   if (status === 'Waiting Room') {
@@ -2511,16 +3396,40 @@ app.post('/appointments/:id/status', async (req, res) => {
   try {
     await client.query('BEGIN');
     const appointmentResult = await client.query(
-      'SELECT appointment_date::text AS appointment_date, status FROM appointments WHERE id = $1 FOR UPDATE',
+      `SELECT appointment_date::text AS appointment_date, status, doctor_id
+       FROM appointments WHERE id = $1 FOR UPDATE`,
       [Number(appointmentId)]
     );
     if (!appointmentResult.rowCount) {
       await client.query('ROLLBACK');
-      return res.status(404).send('No se encontró la cita que intentas actualizar.');
+      return wantsJson
+        ? res.status(404).json({ error: 'No se encontró la cita que intentas actualizar.' })
+        : res.status(404).send('No se encontró la cita que intentas actualizar.');
     }
 
     const previousStatus = appointmentResult.rows[0].status;
     const appointmentDate = String(appointmentResult.rows[0].appointment_date).slice(0, 10);
+    const roles = req.session.user.roles || [];
+    const broadAccess = roles.includes('admissions');
+    if (roles.includes('doctor') && !broadAccess
+        && Number(appointmentResult.rows[0].doctor_id) !== Number(req.session.user.id)) {
+      await client.query('ROLLBACK');
+      return wantsJson
+        ? res.status(403).json({ error: 'Solo puedes cambiar el estado de tus propias citas.' })
+        : res.status(403).send('Solo puedes cambiar el estado de tus propias citas.');
+    }
+    if (previousStatus === 'Cancelled' || previousStatus === 'Attended') {
+      await client.query('ROLLBACK');
+      return wantsJson
+        ? res.status(409).json({ error: 'No se puede cambiar el estado de una cita cancelada o completada.' })
+        : res.status(409).send('No se puede cambiar el estado de una cita cancelada o completada.');
+    }
+    if (previousStatus === status) {
+      await client.query('ROLLBACK');
+      return wantsJson
+        ? res.json({ appointmentId, status, unchanged: true })
+        : res.redirect(`/agenda?date=${encodeURIComponent(appointmentDate)}#appointment-${appointmentId}`);
+    }
     await client.query(
       `UPDATE appointments SET status = $1${timeColumnUpdate} WHERE id = $2`,
       [status, Number(appointmentId)]
@@ -2532,12 +3441,16 @@ app.post('/appointments/:id/status', async (req, res) => {
       details: { previousStatus, newStatus: status },
     });
     await client.query('COMMIT');
+    if (wantsJson) {
+      return res.json({ appointmentId, status, previousStatus });
+    }
     res.redirect(`/agenda?date=${encodeURIComponent(appointmentDate)}#appointment-${appointmentId}`);
   } catch (err) {
     await client.query('ROLLBACK').catch((rollbackError) => {
       console.error('Error al revertir el cambio de estado de la cita:', rollbackError.message);
     });
     console.error('Error al actualizar estado de la cita:', err.message);
+    if (wantsJson) return res.status(500).json({ error: 'Error interno al actualizar la cita.' });
     res.status(500).send('Error interno al actualizar la cita.');
   } finally {
     client.release();
@@ -2545,7 +3458,7 @@ app.post('/appointments/:id/status', async (req, res) => {
 });
 
 // ENDPOINT POST: Crear una cita y, si es necesario, registrar al paciente en la misma transacción.
-app.post('/appointments/create', async (req, res) => {
+app.post('/appointments/create', requireRole('admissions'), async (req, res) => {
   const {
     patient_id: patientIdInput, doctor_id: doctorIdInput, branch_id: branchIdInput,
     appointment_date: appointmentDate, appointment_time: appointmentTime,
@@ -2739,7 +3652,7 @@ app.post('/appointments/create', async (req, res) => {
 // 5. MÓDULO: GESTIÓN DE MÉDICOS Y HORARIOS
 // ==========================================
 
-app.get('/admin/doctors', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.get('/admin/doctors', requireRole('system_admin'), async (req, res) => {
   try {
     const [doctorsResult, specialtiesResult] = await Promise.all([
       db.query(`
@@ -2774,7 +3687,7 @@ app.get('/admin/doctors', requireRole('system_admin', 'admissions'), async (req,
   }
 });
 
-app.get('/admin/doctors/:id/edit', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.get('/admin/doctors/:id/edit', requireRole('system_admin'), async (req, res) => {
   if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).send('Identificador de médico no válido.');
 
   try {
@@ -2839,7 +3752,7 @@ app.get('/admin/doctors/:id/edit', requireRole('system_admin', 'admissions'), as
   }
 });
 
-app.get('/admin/doctors/:id/schedules', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.get('/admin/doctors/:id/schedules', requireRole('system_admin'), async (req, res) => {
   const doctorId = req.params.id;
 
   try {
@@ -2869,7 +3782,7 @@ app.get('/admin/doctors/:id/schedules', requireRole('system_admin', 'admissions'
   }
 });
 
-app.post('/admin/doctors/save', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.post('/admin/doctors/save', requireRole('system_admin'), async (req, res) => {
   const { 
     id, code, name, personal_type, office_room, title,
     dni_document, college_number, msas_number, address, phone, email, 
@@ -2977,7 +3890,7 @@ app.post('/admin/doctors/save', requireRole('system_admin', 'admissions'), async
   }
 });
 
-app.post('/admin/doctors/:doctorId/appointment-types', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.post('/admin/doctors/:doctorId/appointment-types', requireRole('system_admin'), async (req, res) => {
   const { doctorId } = req.params;
   if (!/^\d+$/.test(doctorId)) return res.status(400).send('Identificador de médico no válido.');
   const durations = req.body.durations || {};
@@ -3017,7 +3930,7 @@ app.post('/admin/doctors/:doctorId/appointment-types', requireRole('system_admin
   }
 });
 
-app.post('/admin/doctors/:doctorId/schedules', requireRole('system_admin', 'admissions'), async (req, res) => {
+app.post('/admin/doctors/:doctorId/schedules', requireRole('system_admin'), async (req, res) => {
   const doctorId = req.params.doctorId;
   if (!isPositiveInteger(doctorId)) return res.status(400).send('Identificador de médico no válido.');
   let schedules;
@@ -3318,7 +4231,7 @@ app.post('/admin/billing/services/:serviceId', requireRole('system_admin'), asyn
   }
 });
 
-app.get('/billing', requireRole('admissions', 'system_admin'), async (req, res) => {
+app.get('/billing', requireRole('system_admin'), async (req, res) => {
   try {
     const [branchesResult, currenciesResult, patientsResult, invoicesResult, settingsResult] = await Promise.all([
       db.query('SELECT id, name FROM branches WHERE active IS DISTINCT FROM FALSE ORDER BY name'),
@@ -3359,7 +4272,7 @@ app.get('/billing', requireRole('admissions', 'system_admin'), async (req, res) 
       patients: patientsResult.rows,
       invoices: invoicesResult.rows,
       baseCurrency: settingsResult.rows[0]?.base_currency || 'VES',
-      canProcessBilling: req.session.user.roles.includes('admissions'),
+      canProcessBilling: req.session.user.roles.includes('system_admin'),
     });
   } catch (error) {
     console.error('Error al cargar caja:', error.message);
@@ -3367,7 +4280,7 @@ app.get('/billing', requireRole('admissions', 'system_admin'), async (req, res) 
   }
 });
 
-app.post('/billing/invoices', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices', requireRole('system_admin'), async (req, res) => {
   const { patient_id: patientId, branch_id: branchId } = req.body;
   if (!isPositiveInteger(patientId) || !isPositiveInteger(branchId)) {
     return res.status(400).send('Paciente o sede no válido.');
@@ -3434,7 +4347,7 @@ app.post('/billing/invoices', requireRole('admissions'), async (req, res) => {
   }
 });
 
-app.get('/billing/invoices/:invoiceId', requireRole('admissions', 'system_admin'), async (req, res) => {
+app.get('/billing/invoices/:invoiceId', requireRole('system_admin'), async (req, res) => {
   if (!isPositiveInteger(req.params.invoiceId)) return res.status(400).send('Identificador de factura no válido.');
   try {
     const invoiceResult = await db.query(
@@ -3540,7 +4453,7 @@ app.get('/billing/invoices/:invoiceId', requireRole('admissions', 'system_admin'
       studies: studiesResult.rows,
       balance,
       canVoid,
-      canProcessBilling: req.session.user.roles.includes('admissions'),
+      canProcessBilling: req.session.user.roles.includes('system_admin'),
     });
   } catch (error) {
     console.error('Error al consultar factura:', error.message);
@@ -3548,7 +4461,7 @@ app.get('/billing/invoices/:invoiceId', requireRole('admissions', 'system_admin'
   }
 });
 
-app.post('/billing/invoices/:invoiceId/items', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices/:invoiceId/items', requireRole('system_admin'), async (req, res) => {
   const { invoiceId } = req.params;
   if (!isPositiveInteger(invoiceId) || !isPositiveInteger(req.body.service_id)) {
     return res.status(400).send('Factura o servicio no válido.');
@@ -3672,7 +4585,7 @@ app.post('/billing/invoices/:invoiceId/items', requireRole('admissions'), async 
   }
 });
 
-app.post('/billing/invoices/:invoiceId/issue', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices/:invoiceId/issue', requireRole('system_admin'), async (req, res) => {
   if (!isPositiveInteger(req.params.invoiceId)) return res.status(400).send('Identificador de factura no válido.');
   try {
     await withBillingTransaction(async (client) => {
@@ -3762,7 +4675,7 @@ app.post('/billing/invoices/:invoiceId/issue', requireRole('admissions'), async 
   }
 });
 
-app.post('/billing/invoices/:invoiceId/payments', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices/:invoiceId/payments', requireRole('system_admin'), async (req, res) => {
   if (!isPositiveInteger(req.params.invoiceId)) return res.status(400).send('Identificador de factura no válido.');
   let currency;
   let amount;
@@ -3845,7 +4758,7 @@ app.post('/billing/invoices/:invoiceId/payments', requireRole('admissions'), asy
   }
 });
 
-app.post('/billing/invoices/:invoiceId/transactions/:transactionId/refund', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices/:invoiceId/transactions/:transactionId/refund', requireRole('system_admin'), async (req, res) => {
   const { invoiceId, transactionId } = req.params;
   if (!isPositiveInteger(invoiceId) || !isPositiveInteger(transactionId)) {
     return res.status(400).send('Identificador de factura o transacción no válido.');
@@ -3913,7 +4826,7 @@ app.post('/billing/invoices/:invoiceId/transactions/:transactionId/refund', requ
   }
 });
 
-app.post('/billing/invoices/:invoiceId/void', requireRole('admissions'), async (req, res) => {
+app.post('/billing/invoices/:invoiceId/void', requireRole('system_admin'), async (req, res) => {
   if (!isPositiveInteger(req.params.invoiceId)) return res.status(400).send('Identificador de factura no válido.');
   try {
     await withBillingTransaction(async (client) => {
@@ -3941,7 +4854,7 @@ app.post('/billing/invoices/:invoiceId/void', requireRole('admissions'), async (
   }
 });
 
-app.get('/billing/invoices/:invoiceId/print', requireRole('admissions', 'system_admin'), async (req, res) => {
+app.get('/billing/invoices/:invoiceId/print', requireRole('system_admin'), async (req, res) => {
   if (!isPositiveInteger(req.params.invoiceId)) return res.status(400).send('Identificador de factura no válido.');
   try {
     const invoiceResult = await db.query(
@@ -4000,7 +4913,7 @@ app.get('/billing/invoices/:invoiceId/print', requireRole('admissions', 'system_
   }
 });
 
-const reportRoles = ['system_admin', 'audit_security', 'admissions', 'doctor', 'nurse'];
+const reportRoles = ['system_admin', 'audit_security'];
 const financialReportRoles = ['system_admin', 'audit_security'];
 
 async function loadReport(req, res, errorFormat = 'json') {

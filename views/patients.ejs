@@ -16,13 +16,41 @@
             <h2 class="text-primary fw-bold">Directorio de Pacientes</h2>
             <p class="text-muted mb-0">Gestión centralizada de pacientes - Atención Primaria (APS)</p>
         </div>
-        <!-- Botón que activa la Ventana Modal de Registro -->
-        <button class="btn btn-success shadow-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoPaciente">
-            + Nuevo Paciente
-        </button>
+        <% if (currentUser.roles.includes('admissions')) { %>
+            <button class="btn btn-success shadow-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoPaciente">
+                + Nuevo Paciente
+            </button>
+        <% } %>
     </div>
     <% if (message) { %><div class="alert alert-success" role="status"><%= message %></div><% } %>
     <% if (error) { %><div class="alert alert-danger" role="alert"><%= error %></div><% } %>
+
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            <form action="/pacientes" method="GET" role="search" aria-label="Buscar pacientes">
+                <label for="patientDirectorySearch" class="form-label fw-bold">Buscar paciente</label>
+                <div class="input-group">
+                    <input
+                        id="patientDirectorySearch"
+                        name="search"
+                        type="search"
+                        class="form-control"
+                        value="<%= search %>"
+                        maxlength="80"
+                        placeholder="Cédula, HMC, nombre o apellido (mínimo 3 caracteres)"
+                        aria-describedby="patientSearchHelp">
+                    <button class="btn btn-primary" type="submit">Buscar</button>
+                    <% if (search) { %>
+                        <a class="btn btn-outline-secondary" href="/pacientes">Limpiar</a>
+                    <% } %>
+                </div>
+                <div id="patientSearchHelp" class="form-text">
+                    Busca por documento, número de historia clínica, nombre o apellido.
+                    Escribe al menos 3 caracteres.
+                </div>
+            </form>
+        </div>
+    </div>
 
     <!-- Tabla de Pacientes -->
     <div class="card shadow-sm border-0">
@@ -55,43 +83,63 @@
                                     <td><%= paciente.phone || 'N/A' %></td>
                                     <td><%= paciente.email || 'No registrado' %></td>
                                     <td class="text-center">
-                                        <!-- Enlace dinámico mostrando el Número de Historia Médica (Ej: Ver HMC-10005) -->
-                                        <a href="/patients/<%= paciente.id %>/history" class="btn btn-sm btn-outline-primary mb-1 fw-bold shadow-sm">
-                                            Ver <%= paciente.medical_record_number || 'Historia' %>
-                                        </a>
+                                        <% if (currentUser.roles.includes('doctor')) { %>
+                                            <a href="/patients/<%= paciente.id %>/history" class="btn btn-sm btn-outline-primary mb-1 fw-bold shadow-sm">
+                                                Ver <%= paciente.medical_record_number || 'Historia' %>
+                                            </a>
+                                        <% } %>
                                         
-                                        <!-- Botón Editar -->
-                                        <button
-                                            class="btn btn-sm btn-outline-warning mb-1 shadow-sm"
-                                            type="button"
-                                            data-edit-patient
-                                            data-patient-id="<%= paciente.id %>"
-                                            data-patient-document="<%= paciente.dni_document || '' %>"
-                                            data-patient-document-type="<%= paciente.document_type %>"
-                                            data-patient-first-name="<%= paciente.first_name %>"
-                                            data-patient-last-name="<%= paciente.last_name %>"
-                                            data-patient-birth-date="<%= paciente.birth_date ? new Date(paciente.birth_date).toISOString().split('T')[0] : '' %>"
-                                            data-patient-gender="<%= paciente.gender || '' %>"
-                                            data-patient-phone="<%= paciente.phone || '' %>"
-                                            data-patient-email="<%= paciente.email || '' %>"
-                                            aria-label="Editar paciente <%= paciente.first_name %> <%= paciente.last_name %>">
-                                            Editar
-                                        </button>
+                                        <% if (currentUser.roles.includes('admissions')) { %>
+                                            <button
+                                                class="btn btn-sm btn-outline-warning mb-1 shadow-sm"
+                                                type="button"
+                                                data-edit-patient
+                                                data-patient-id="<%= paciente.id %>"
+                                                data-patient-document="<%= paciente.dni_document || '' %>"
+                                                data-patient-document-type="<%= paciente.document_type %>"
+                                                data-patient-first-name="<%= paciente.first_name %>"
+                                                data-patient-last-name="<%= paciente.last_name %>"
+                                                data-patient-birth-date="<%= paciente.birth_date ? new Date(paciente.birth_date).toISOString().split('T')[0] : '' %>"
+                                                data-patient-gender="<%= paciente.gender || '' %>"
+                                                data-patient-phone="<%= paciente.phone || '' %>"
+                                                data-patient-email="<%= paciente.email || '' %>"
+                                                aria-label="Editar paciente <%= paciente.first_name %> <%= paciente.last_name %>">
+                                                Editar
+                                            </button>
+                                        <% } %>
                                     </td>
                                 </tr>
                             <% }) %>
                         <% } else { %>
                             <tr>
-                                <td colspan="8" class="text-center text-muted py-4">No hay pacientes registrados aún en la base de datos.</td>
+                                <td colspan="8" class="text-center text-muted py-4">
+                                    <%= search ? 'No se encontraron pacientes para esa búsqueda.' : 'No hay pacientes registrados aún en la base de datos.' %>
+                                </td>
                             </tr>
                         <% } %>
                     </tbody>
                 </table>
             </div>
         </div>
+        <% if (hasPreviousPage || hasNextPage) { %>
+            <nav class="d-flex justify-content-between align-items-center my-3" aria-label="Paginación del directorio">
+                <% if (hasPreviousPage) { %>
+                    <a class="btn btn-outline-primary"
+                       href="/pacientes?search=<%= encodeURIComponent(search) %>&amp;page=<%= page - 1 %>">Anterior</a>
+                <% } else { %>
+                    <span></span>
+                <% } %>
+                <span class="text-muted">Página <%= page %></span>
+                <% if (hasNextPage) { %>
+                    <a class="btn btn-outline-primary"
+                       href="/pacientes?search=<%= encodeURIComponent(search) %>&amp;page=<%= page + 1 %>">Siguiente</a>
+                <% } %>
+            </nav>
+        <% } %>
     </div>
 </div>
 
+<% if (currentUser.roles.includes('admissions')) { %>
 <!-- VENTANA MODAL: Formulario de Nuevo Paciente -->
 <div class="modal fade" id="modalNuevoPaciente" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
@@ -149,8 +197,10 @@
         </div>
     </div>
 </div>
+<% } %>
 
 <!-- VENTANA MODAL: Formulario de Editar Paciente -->
+<% if (currentUser.roles.includes('admissions')) { %>
 <div class="modal fade" id="modalEditarPaciente" tabindex="-1" aria-labelledby="modalEditarLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -208,25 +258,28 @@
         </div>
     </div>
 </div>
+<% } %>
 
 <!-- Importar Bootstrap 5 JS Bundle y Script de Edición -->
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script>
     const editPatientForm = document.getElementById('formEditarPaciente');
-    document.querySelectorAll('[data-edit-patient]').forEach((button) => {
-        button.addEventListener('click', () => {
-            editPatientForm.action = `/patients/update/${encodeURIComponent(button.dataset.patientId)}`;
-            editPatientForm.elements.dni_document.value = button.dataset.patientDocument;
-            editPatientForm.elements.dni_document.required = button.dataset.patientDocumentType !== 'none';
-            editPatientForm.elements.first_name.value = button.dataset.patientFirstName;
-            editPatientForm.elements.last_name.value = button.dataset.patientLastName;
-            editPatientForm.elements.birth_date.value = button.dataset.patientBirthDate;
-            editPatientForm.elements.gender.value = button.dataset.patientGender;
-            editPatientForm.elements.phone.value = button.dataset.patientPhone;
-            editPatientForm.elements.email.value = button.dataset.patientEmail;
-            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalEditarPaciente')).show();
+    if (editPatientForm) {
+        document.querySelectorAll('[data-edit-patient]').forEach((button) => {
+            button.addEventListener('click', () => {
+                editPatientForm.action = `/patients/update/${encodeURIComponent(button.dataset.patientId)}`;
+                editPatientForm.elements.dni_document.value = button.dataset.patientDocument;
+                editPatientForm.elements.dni_document.required = button.dataset.patientDocumentType !== 'none';
+                editPatientForm.elements.first_name.value = button.dataset.patientFirstName;
+                editPatientForm.elements.last_name.value = button.dataset.patientLastName;
+                editPatientForm.elements.birth_date.value = button.dataset.patientBirthDate;
+                editPatientForm.elements.gender.value = button.dataset.patientGender;
+                editPatientForm.elements.phone.value = button.dataset.patientPhone;
+                editPatientForm.elements.email.value = button.dataset.patientEmail;
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('modalEditarPaciente')).show();
+            });
         });
-    });
+    }
 </script>
 </body>
 </html>

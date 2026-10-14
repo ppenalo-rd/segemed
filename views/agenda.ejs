@@ -19,6 +19,9 @@
         .calendar-filter {
             min-width: min(100%, 210px);
         }
+        .appointment-called {
+            background-color: rgba(13, 202, 240, .08);
+        }
 
         #appointmentsCalendar .fc {
             --fc-border-color: rgba(83, 112, 151, 0.14);
@@ -220,14 +223,21 @@
                             <th>Motivo</th>
                             <th>Modalidad</th>
                             <th>Estado Actual</th>
-                            <th class="text-center">Actualizar Estado</th>
+                            <th class="text-center">Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
                         <% if (citas && citas.length > 0) { %>
                             <% citas.forEach(cita => { %>
                                 <tr id="appointment-<%= cita.id %>">
-                                    <td class="fw-bold ps-3"><%= cita.first_name %> <%= cita.last_name %></td>
+                                    <td class="fw-bold ps-3">
+                                        <%= cita.first_name %> <%= cita.last_name %>
+                                        <% if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
+                                            <a class="d-block small" href="/patients/<%= cita.patient_id %>/history?startSoap=1&amp;appointment_id=<%= cita.id %>#new-soap">
+                                                Abrir historia y atender
+                                            </a>
+                                        <% } %>
+                                    </td>
                                     <td><code><%= cita.dni_document %></code></td>
                                     <td>
                                         <%= new Date(cita.appointment_date).toLocaleDateString('es-ES') %><br>
@@ -251,11 +261,18 @@
                                             else if (cita.status === 'Attended') { badgeClass = 'bg-success'; estadoEs = 'Atendido'; }
                                             else if (cita.status === 'Cancelled') { badgeClass = 'bg-danger'; estadoEs = 'Cancelado'; }
                                         %>
-                                        <span class="badge <%= badgeClass %>"><%= estadoEs %></span>
+                                        <span class="badge appointment-status-badge <%= badgeClass %>"><%= estadoEs %></span>
                                     </td>
                                     
                                     <!-- Formulario POST para cambiar el estado -->
                                     <td class="text-center">
+                                        <% if (['doctor', 'admissions'].some(role => currentUser.roles.includes(role))
+                                            && ['Scheduled', 'Waiting Room'].includes(cita.status)) { %>
+                                            <button type="button" class="btn btn-sm btn-info text-dark fw-bold call-patient-button mb-2"
+                                                    data-appointment-id="<%= cita.id %>" data-csrf="<%= csrfToken %>">
+                                                Llamar paciente
+                                            </button>
+                                        <% } %>
                                         <form action="/appointments/<%= cita.id %>/status" method="POST" class="d-flex justify-content-center align-items-center">
                                             <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                             <select name="status" class="form-select form-select-sm w-auto me-2 shadow-sm" required>
@@ -267,6 +284,7 @@
                                             </select>
                                             <button type="submit" class="btn btn-sm btn-dark fw-bold shadow-sm">Aplicar</button>
                                         </form>
+                                        <small class="d-block mt-1 appointment-action-feedback" aria-live="polite"></small>
                                     </td>
                                 </tr>
                             <% }) %>
@@ -283,6 +301,46 @@
         </div>
     </div>
 </div>
+
+<script>
+    // Actualiza el estado de llamado sin recargar la agenda y comunica errores en la fila.
+    document.querySelectorAll('.call-patient-button').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const feedback = button.closest('td').querySelector('.appointment-action-feedback');
+            button.disabled = true;
+            feedback.textContent = 'Actualizando estado…';
+            try {
+                const response = await fetch(`/appointments/${button.dataset.appointmentId}/status`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': button.dataset.csrf,
+                    },
+                    body: JSON.stringify({ status: 'In Consultation' }),
+                });
+                const contentType = response.headers.get('content-type') || '';
+                const result = contentType.includes('application/json')
+                    ? await response.json()
+                    : { error: 'La sesión expiró o no tienes permiso para llamar a este paciente.' };
+                if (!response.ok) throw new Error(result.error || 'No se pudo llamar al paciente.');
+                const row = button.closest('tr');
+                row.classList.add('appointment-called');
+                const badge = row.querySelector('.appointment-status-badge');
+                badge.className = 'badge appointment-status-badge bg-info text-dark';
+                badge.textContent = 'Llamado / En Consulta';
+                button.remove();
+                feedback.textContent = 'Paciente llamado.';
+                feedback.className = 'd-block mt-1 appointment-action-feedback text-success';
+            } catch (error) {
+                button.disabled = false;
+                feedback.textContent = error.message || 'No se pudo llamar al paciente.';
+                feedback.className = 'd-block mt-1 appointment-action-feedback text-danger';
+            }
+        });
+    });
+</script>
 
 <!-- Modal: Agendar Nueva Cita -->
 <div class="modal fade" id="nuevaCitaModal" tabindex="-1" aria-labelledby="nuevaCitaModalLabel" aria-hidden="true">
@@ -387,11 +445,7 @@
                       <% if (!doctores.length) { %>
                           <div class="form-text text-danger">
                               No hay perfiles médicos activos vinculados a una cuenta con rol Médico.
-                              <% if (currentUser.roles.includes('system_admin') || currentUser.roles.includes('audit_security')) { %>
-                                  <a href="/admin/users">Vincule el perfil y la cuenta en Usuarios y accesos</a>.
-                              <% } else { %>
-                                  Solicite al administrador que vincule el perfil médico con su cuenta.
-                              <% } %>
+                              Solicite al administrador que vincule el perfil médico con su cuenta.
                           </div>
                       <% } %>
                   </div>

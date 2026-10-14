@@ -16,23 +16,29 @@
         <p class="text-muted mb-0">Selecciona un módulo disponible para tu perfil.</p>
     </header>
 
-    <% if (modules.length) { %>
-        <section class="row g-4" aria-label="Módulos disponibles">
-            <% modules.forEach((module) => { %>
-                <div class="col-12 col-md-6 col-xl-4" data-module="<%= module.id %>">
-                    <a class="card h-100 border-0 shadow-sm text-decoration-none text-dark"
-                       href="<%= module.href %>">
-                        <div class="card-body p-4">
-                            <h2 class="h5 fw-bold"><%= module.title %></h2>
-                            <p class="text-muted mb-0"><%= module.description %></p>
+    <% if (sections.length) { %>
+        <% sections.forEach((section) => { %>
+            <section class="mb-5" aria-labelledby="section-<%= section.id %>">
+                <h2 id="section-<%= section.id %>" class="h5 fw-bold mb-3"><%= section.title %></h2>
+                <div class="row g-4" aria-label="<%= section.title %>">
+                    <% section.modules.forEach((module) => { %>
+                        <div class="col-12 col-md-6 col-xl-4" data-module="<%= module.id %>">
+                            <a class="card h-100 border-0 shadow-sm text-decoration-none text-dark"
+                               href="<%= module.href %>">
+                                <div class="card-body p-4">
+                                    <span class="fs-2" aria-hidden="true"><%= module.icon %></span>
+                                    <h3 class="h5 fw-bold mt-2"><%= module.title %></h3>
+                                    <p class="text-muted mb-0"><%= module.description %></p>
+                                </div>
+                                <div class="card-footer bg-white border-0 px-4 pb-4 pt-0">
+                                    <span class="text-primary fw-semibold">Abrir módulo <span aria-hidden="true">→</span></span>
+                                </div>
+                            </a>
                         </div>
-                        <div class="card-footer bg-white border-0 px-4 pb-4 pt-0">
-                            <span class="text-primary fw-semibold">Abrir módulo <span aria-hidden="true">→</span></span>
-                        </div>
-                    </a>
+                    <% }) %>
                 </div>
-            <% }) %>
-        </section>
+            </section>
+        <% }) %>
     <% } else { %>
         <div class="alert alert-warning" role="status">
             Tu cuenta todavía no tiene módulos habilitados. Contacta al administrador del sistema.

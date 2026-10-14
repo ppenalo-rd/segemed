@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pacientes citados hoy | SIGEMED</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 8% 8%, rgba(13, 110, 253, .10), transparent 28rem),
+                linear-gradient(145deg, #f4f8fc 0%, #edf4f8 100%);
+        }
+        .today-shell {
+            border: 1px solid rgba(255, 255, 255, .78);
+            border-radius: 1.25rem;
+            background: rgba(255, 255, 255, .82);
+            box-shadow: 0 1rem 3rem rgba(28, 57, 84, .09);
+            backdrop-filter: blur(14px);
+        }
+        .today-heading {
+            background: linear-gradient(120deg, #0d6efd, #20a4a8);
+            color: #fff;
+            border-radius: 1.25rem;
+        }
+        .empty-state {
+            max-width: 34rem;
+            margin: 0 auto;
+        }
+        .appointment-time {
+            color: #087990;
+            font-variant-numeric: tabular-nums;
+            font-weight: 700;
+        }
+        .appointment-called {
+            background: rgba(13, 202, 240, .08);
+        }
+    </style>
+</head>
+<body>
+<%- include('partials/navigation') %>
+
+<main class="container py-4 py-lg-5">
+    <header class="today-heading p-4 p-lg-5 mb-4 shadow-sm">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+            <div>
+                <p class="text-white-50 fw-semibold text-uppercase small mb-2">Agenda clínica</p>
+                <h1 class="h2 fw-bold mb-2">Pacientes citados hoy</h1>
+                <% const [year, month, day] = todayDate.split('-'); %>
+                <p class="mb-0">Agenda del <%= `${day}/${month}/${year}` %></p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-light fw-semibold" href="/pacientes">Directorio general</a>
+            </div>
+        </div>
+    </header>
+
+    <section class="today-shell p-3 p-lg-4" aria-label="Citas programadas para hoy">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h5 fw-bold mb-0">Citas del día</h2>
+            <span class="badge rounded-pill text-bg-primary">
+                <%= citas.length %> <%= citas.length === 1 ? 'cita' : 'citas' %>
+            </span>
+        </div>
+
+        <% if (citas.length) { %>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th scope="col">Hora</th>
+                            <th scope="col">Paciente</th>
+                            <th scope="col">Documento</th>
+                            <th scope="col">Motivo de visita</th>
+                            <th scope="col">Estado</th>
+                            <th scope="col" class="text-end">Acciones clínicas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% citas.forEach((cita) => { %>
+                            <tr id="appointment-<%= cita.appointment_id %>" class="<%= cita.status === 'In Consultation' ? 'appointment-called' : '' %>">
+                                <td class="appointment-time"><%= cita.appointment_time || 'Sin hora' %></td>
+                                <td class="fw-semibold">
+                                    <% if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
+                                        <a href="/patients/<%= cita.patient_id %>/history?startSoap=1&amp;appointment_id=<%= cita.appointment_id %>#new-soap">
+                                            <%= cita.first_name %> <%= cita.last_name %>
+                                        </a>
+                                    <% } else { %>
+                                        <%= cita.first_name %> <%= cita.last_name %>
+                                    <% } %>
+                                </td>
+                                <td>
+                                    <% if (cita.dni_document) { %>
+                                        <span class="text-nowrap">
+                                            <%= cita.document_type === 'cedula' ? 'Cédula' : (cita.document_type === 'passport' ? 'Pasaporte' : 'Documento') %>:
+                                            <%= cita.dni_document %>
+                                        </span>
+                                    <% } else { %>
+                                        <span class="text-muted">No registrado</span>
+                                    <% } %>
+                                </td>
+                                <td><%= cita.reason_for_visit || 'No especificado' %></td>
+                                <td>
+                                    <span class="badge appointment-status-badge <%= cita.status === 'In Consultation' ? 'text-bg-info' : cita.status === 'Waiting Room' ? 'text-bg-warning' : 'text-bg-secondary' %>">
+                                        <%= { Scheduled: 'Programada', 'Waiting Room': 'En sala de espera', 'In Consultation': 'Llamado / En consulta', Attended: 'Completada', Cancelled: 'Cancelada' }[cita.status] || cita.status %>
+                                    </span>
+                                </td>
+                                <td class="text-end">
+                                    <div class="d-inline-flex flex-wrap justify-content-end gap-1">
+                                        <% if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
+                                            <a class="btn btn-sm btn-success"
+                                               href="/patients/<%= cita.patient_id %>/history?startSoap=1&amp;appointment_id=<%= cita.appointment_id %>#new-soap">
+                                                Iniciar SOAP
+                                            </a>
+                                        <% } %>
+                                        <a class="btn btn-sm btn-outline-secondary"
+                                           href="/patients/<%= cita.patient_id %>/history#patient-demographics">
+                                            Ver datos
+                                        </a>
+                                        <a class="btn btn-sm btn-outline-primary"
+                                           href="/patients/<%= cita.patient_id %>/history#soap-history">
+                                            Historial SOAP
+                                        </a>
+                                        <% if (['Scheduled', 'Waiting Room'].includes(cita.status)) { %>
+                                            <button type="button" class="btn btn-sm btn-outline-info call-patient-button"
+                                                    data-appointment-id="<%= cita.appointment_id %>"
+                                                    data-csrf="<%= csrfToken %>">
+                                                Llamar paciente
+                                            </button>
+                                        <% } %>
+                                    </div>
+                                    <small class="d-block text-end mt-1 appointment-action-feedback" aria-live="polite"></small>
+                                </td>
+                            </tr>
+                        <% }) %>
+                    </tbody>
+                </table>
+            </div>
+        <% } else { %>
+            <div class="empty-state text-center py-5">
+                <div class="display-5 mb-3" aria-hidden="true">☀️</div>
+                <h3 class="h4 fw-bold">Tu agenda está libre por hoy</h3>
+                <p class="text-muted mb-4">No hay pacientes con citas activas para esta fecha.</p>
+                <a class="btn btn-outline-primary" href="/pacientes">Abrir directorio general</a>
+            </div>
+        <% } %>
+    </section>
+</main>
+<script>
+    // Llama al paciente por AJAX y refleja el nuevo estado de atención en la agenda diaria.
+    document.querySelectorAll('.call-patient-button').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const feedback = button.closest('td').querySelector('.appointment-action-feedback');
+            button.disabled = true;
+            feedback.textContent = 'Actualizando estado…';
+            try {
+                const response = await fetch(`/appointments/${button.dataset.appointmentId}/status`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': button.dataset.csrf,
+                    },
+                    body: JSON.stringify({ status: 'In Consultation' }),
+                });
+                const contentType = response.headers.get('content-type') || '';
+                const result = contentType.includes('application/json')
+                    ? await response.json()
+                    : { error: 'La sesión expiró o no tienes permiso para llamar a este paciente.' };
+                if (!response.ok) throw new Error(result.error || 'No se pudo llamar al paciente.');
+                const row = button.closest('tr');
+                row.classList.add('appointment-called');
+                const badge = row.querySelector('.appointment-status-badge');
+                badge.className = 'badge appointment-status-badge text-bg-info';
+                badge.textContent = 'Llamado / En consulta';
+                button.remove();
+                feedback.textContent = 'Paciente llamado.';
+                feedback.className = 'd-block text-end mt-1 appointment-action-feedback text-success';
+            } catch (error) {
+                button.disabled = false;
+                feedback.textContent = error.message || 'No se pudo llamar al paciente.';
+                feedback.className = 'd-block text-end mt-1 appointment-action-feedback text-danger';
+            }
+        });
+    });
+</script>
+</body>
+</html>

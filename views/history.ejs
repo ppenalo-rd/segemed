@@ -7,24 +7,44 @@
     <!-- Bootstrap 5 CSS -->
     <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        /* Estilo visual para las pestañas personalizadas */
+        body {
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 8% 8%, rgba(13, 110, 253, .08), transparent 28rem),
+                linear-gradient(145deg, #f4f8fc 0%, #edf4f8 100%);
+        }
+        .soap-history-card {
+            border: 1px solid rgba(255, 255, 255, .8);
+            border-radius: 1rem;
+            background: rgba(255, 255, 255, .84);
+            box-shadow: 0 .75rem 2rem rgba(28, 57, 84, .08);
+            backdrop-filter: blur(12px);
+            overflow: hidden;
+        }
+        .soap-history-card .card-header {
+            background: rgba(255, 255, 255, .68);
+            border-bottom: 1px solid rgba(28, 57, 84, .08);
+        }
+        .soap-history-toggle {
+            color: #17324d;
+            text-align: left;
+        }
         .soap-tab-btn {
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            margin-right: 5px;
             font-weight: bold;
-            color: #0d6efd;
         }
-        .soap-tab-btn.active-tab {
-            background-color: #0d6efd !important;
-            color: white !important;
-            border-color: #0d6efd !important;
+        .soap-draft-status {
+            min-height: 2.5rem;
         }
-        .soap-pane {
-            display: none;
+        .cie10-suggestions {
+            max-height: 16rem;
+            overflow-y: auto;
+            z-index: 1080;
         }
-        .soap-pane.active-pane {
-            display: block;
+        #soapEditOtpModal {
+            z-index: 1060;
+        }
+        .modal-backdrop.soap-edit-otp-backdrop {
+            z-index: 1055;
         }
     </style>
 </head>
@@ -33,16 +53,21 @@
 
 <div class="container my-5">
     <!-- Cabecera y Botón de Retorno -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
         <div>
-            <h2 class="text-primary fw-bold">Expediente Clínico</h2>
+            <h1 class="h2 text-primary fw-bold mb-1">Expediente Clínico</h1>
             <p class="text-muted mb-0">Sistema de Atención Primaria (APS)</p>
         </div>
-        <a href="/pacientes" class="btn btn-secondary shadow-sm">← Volver al Directorio</a>
+        <div class="d-flex flex-wrap gap-2">
+            <% if (currentUser.roles.includes('doctor')) { %>
+                <a href="/appointments/today" class="btn btn-outline-success shadow-sm">← Agenda de hoy</a>
+            <% } %>
+            <a href="/pacientes" class="btn btn-secondary shadow-sm">Directorio general</a>
+        </div>
     </div>
 
     <!-- Tarjeta de Datos del Paciente -->
-    <div class="card shadow-sm border-0 mb-4">
+    <div class="card shadow-sm border-0 mb-4" id="patient-demographics">
         <div class="card-header bg-primary text-white fw-bold">
             Información General del Paciente
         </div>
@@ -68,40 +93,67 @@
         </div>
     </div>
 
-    <!-- Botón para abrir el Formulario de Nueva Nota SOAP -->
     <div class="mb-4">
-        <!-- Al hacer clic para una nueva, limpiamos el formulario para evitar que arrastre IDs viejos -->
-        <button class="btn btn-success shadow-sm fw-bold" data-bs-toggle="modal" data-bs-target="#modalNuevaNotaSoap" onclick="limpiarModal()">
-            + Registrar Nueva Evolución (SOAP)
-        </button>
+        <% if (currentUser.roles.includes('doctor') && selectedAppointmentId && !selectedAppointmentConsultationId) { %>
+            <button id="new-soap" class="btn btn-success shadow-sm fw-bold"
+                    data-bs-toggle="modal" data-bs-target="#modalNuevaNotaSoap" onclick="limpiarModal()">
+                + Registrar Nueva Evolución (SOAP)
+            </button>
+        <% } else if (currentUser.roles.includes('doctor') && selectedAppointmentConsultationId) { %>
+            <div class="alert alert-info d-inline-block mb-0" role="status">
+                La cita de hoy ya tiene una evolución; continúa desde la nota existente en el historial.
+            </div>
+        <% } else if (currentUser.roles.includes('doctor')) { %>
+            <div class="alert alert-warning d-inline-block mb-0" role="status">
+                Para iniciar una evolución, el paciente debe tener una cita activa contigo para hoy.
+            </div>
+        <% } %>
         <% if (currentUser.roles.includes('system_admin')) { %>
             <a class="btn btn-outline-primary ms-2" href="/admin/medications">Administrar catálogo de medicamentos</a>
         <% } %>
     </div>
 
     <!-- Historial Cronológico de Notas SOAP -->
-    <h3 class="text-secondary fw-bold mb-3">Historial de Evoluciones Clínicas</h3>
+    <section id="soap-history" aria-labelledby="soap-history-title">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h2 id="soap-history-title" class="h4 text-secondary fw-bold mb-0">Historial de Notas SOAP</h2>
+        <span class="badge rounded-pill text-bg-primary">
+            <%= notas.length %> <%= notas.length === 1 ? 'consulta' : 'consultas' %>
+        </span>
+    </div>
     
     <% if (notas.length > 0) { %>
         <% notas.forEach((nota, index) => { %>
-            <div class="card shadow-sm border-0 mb-4">
-                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                    <span><strong>Evolución #<%= notas.length - index %></strong> - Fecha: <%= new Date(nota.consultation_date).toLocaleString() %></span>
-                    <div>
+            <article class="card soap-history-card mb-3">
+                <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
+                    <button class="btn btn-link soap-history-toggle text-decoration-none fw-bold p-0"
+                            type="button"
+                            data-bs-toggle="collapse"
+                            data-bs-target="#soap-consultation-<%= nota.id %>"
+                            aria-expanded="<%= index === 0 ? 'true' : 'false' %>"
+                            aria-controls="soap-consultation-<%= nota.id %>">
+                        <span>Evolución #<%= notas.length - index %></span>
+                        <span class="text-muted fw-normal">· <%= new Date(nota.consultation_date).toLocaleString('es-ES') %></span>
+                    </button>
+                    <div class="d-flex flex-wrap align-items-center gap-1">
                         <% if (nota.diagnoses.length) { nota.diagnoses.forEach((diagnosis) => { %>
-                            <span class="badge bg-info text-dark me-1"><%= diagnosis.type %>: <%= diagnosis.code %></span>
+                            <span class="badge bg-info text-dark"><%= diagnosis.type %>: <%= diagnosis.code %></span>
                         <% }) } else { %>
-                            <span class="badge bg-secondary me-2">Sin CIE-10</span>
+                            <span class="badge bg-secondary">Sin CIE-10</span>
                         <% } %>
                         
                         <!-- NUEVO: Botón para Imprimir Historia Completa (SOAP) -->
-                        <a href="/patients/<%= paciente.id %>/full-history/<%= nota.id %>" target="_blank" class="btn btn-sm btn-primary fw-bold shadow-sm me-1">
+                        <a href="/patients/<%= paciente.id %>/full-history/<%= nota.id %>" target="_blank" rel="noopener" class="btn btn-sm btn-primary fw-bold shadow-sm">
                             📄 Historia Médica
                         </a>
 
                         <!-- Botón para Completar/Editar la evolución interrumpida -->
-                        <button type="button" class="btn btn-sm btn-warning fw-bold text-dark shadow-sm" onclick="cargarDatosEdicion(this)"
+                        <% if (currentUser.roles.includes('doctor') && nota.soap_editable) { %>
+                        <button type="button" id="edit-soap-<%= nota.id %>"
+                            class="btn btn-sm btn-warning fw-bold text-dark shadow-sm"
+                            data-edit-soap
                             data-id="<%= nota.id %>"
+                            data-appointment-id="<%= nota.appointment_id || '' %>"
                             data-subjective="<%= nota.subjective || '' %>"
                             data-chief-complaint="<%= nota.chief_complaint || nota.subjective || '' %>"
                             data-current-illness="<%= nota.current_illness || '' %>"
@@ -122,13 +174,23 @@
                             data-oxygen-saturation="<%= nota.oxygen_saturation || '' %>"
                             data-lab-results-summary="<%= nota.lab_results_summary || '' %>"
                             data-cie10-primary="<%= nota.primary_cie_code || (nota.cie10_code !== 'N/A' ? nota.cie10_code : '') %>"
+                            data-cie10-primary-description="<%= nota.primary_cie_description || nota.cie10_description || '' %>"
                             data-cie10-secondary="<%= nota.secondary_cie_code || '' %>"
+                            data-cie10-secondary-description="<%= nota.secondary_cie_description || '' %>"
                             data-cie10-tertiary="<%= nota.tertiary_cie_code || '' %>"
+                            data-cie10-tertiary-description="<%= nota.tertiary_cie_description || '' %>"
                             data-study-ids="<%= nota.studyOrders.filter(order => ['ordered', 'scheduled', 'in_progress'].includes(order.status)).map(order => order.study_id).join(',') %>">
-                            ✏️ Completar
+                            ✏️ Modificar / Completar nota
                         </button>
+                        <% } else if (currentUser.roles.includes('doctor')) { %>
+                        <span class="badge text-bg-light border text-secondary"
+                              title="La ventana de edición médica es de 24 horas desde el último guardado">
+                            Solo lectura · ventana de edición cerrada
+                        </span>
+                        <% } %>
                     </div>
                 </div>
+                <div class="collapse <%= index === 0 ? 'show' : '' %>" id="soap-consultation-<%= nota.id %>">
                 <div class="card-body">
                     <div class="row mb-3">
                         <div class="col-md-3"><strong>Presión Arterial:</strong> <%= nota.blood_pressure || 'N/A' %></div>
@@ -321,13 +383,15 @@
                     <% if (nota.education_recommendations) { %><p><strong>Educación:</strong> <%= nota.education_recommendations %></p><% } %>
                     <% if (nota.follow_up_date) { %><p class="mb-0"><strong>Seguimiento:</strong> <%= new Date(nota.follow_up_date).toLocaleDateString('es-VE', { timeZone: 'UTC' }) %></p><% } %>
                 </div>
-            </div>
+                </div>
+            </article>
         <% }) %>
     <% } else { %>
         <div class="card shadow-sm border-0 p-4 text-center text-muted">
             <p class="mb-0">No hay notas SOAP registradas para este paciente todavía.</p>
         </div>
     <% } %>
+    </section>
 </div>
 
 <!-- VENTANA MODAL: Formulario de Nueva Nota SOAP con Pestañas Robustas -->
@@ -339,6 +403,10 @@
                 
                 <!-- CAMPO OCULTO: Permite al backend identificar si se está actualizando una consulta existente -->
                 <input type="hidden" id="consultation_id" name="consultation_id" value="">
+                <input type="hidden" id="appointment_id" name="appointment_id"
+                       value="<%= selectedAppointmentId || '' %>"
+                       data-requested-appointment-id="<%= selectedAppointmentId || '' %>">
+                <input type="hidden" id="soap_edit_challenge_id" name="soap_edit_challenge_id" value="">
 
                 <div class="modal-header bg-success text-white">
                     <h5 class="modal-title fw-bold" id="modalSoapLabel">Nueva Evolución Clínica - Estructura SOAP</h5>
@@ -347,24 +415,33 @@
                 <div class="modal-body">
                     
                     <!-- BOTONES DE NAVEGACIÓN (PESTAÑAS) -->
-                    <div class="d-flex flex-wrap mb-4" role="tablist">
-                        <button type="button" class="btn soap-tab-btn active-tab px-3 py-2 rounded" onclick="cambiarTab('subjetivo', event)">1. (S) Subjetivo</button>
-                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('objetivo', event)">2. (O) Objetivo y Signos Vitales</button>
-                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('analisis', event)">3. (A) Análisis y CIE-10</button>
-                        <button type="button" class="btn soap-tab-btn px-3 py-2 rounded" onclick="cambiarTab('plan', event)">4. (P) Plan y Tratamiento</button>
+                    <div class="nav nav-pills flex-wrap gap-2 mb-3" role="tablist" aria-label="Secciones de la evolución SOAP">
+                        <button type="button" class="nav-link soap-tab-btn active" id="soap-tab-subjetivo"
+                                data-bs-toggle="tab" data-bs-target="#pane-subjetivo" role="tab"
+                                aria-controls="pane-subjetivo" aria-selected="true">1. (S) Subjetivo</button>
+                        <button type="button" class="nav-link soap-tab-btn" id="soap-tab-objetivo"
+                                data-bs-toggle="tab" data-bs-target="#pane-objetivo" role="tab"
+                                aria-controls="pane-objetivo" aria-selected="false">2. (O) Objetivo y Signos Vitales</button>
+                        <button type="button" class="nav-link soap-tab-btn" id="soap-tab-analisis"
+                                data-bs-toggle="tab" data-bs-target="#pane-analisis" role="tab"
+                                aria-controls="pane-analisis" aria-selected="false">3. (A) Análisis y CIE-10</button>
+                        <button type="button" class="nav-link soap-tab-btn" id="soap-tab-plan"
+                                data-bs-toggle="tab" data-bs-target="#pane-plan" role="tab"
+                                aria-controls="pane-plan" aria-selected="false">4. (P) Plan y Tratamiento</button>
+                    </div>
+                    <div id="soapDraftStatus" class="alert alert-info soap-draft-status py-2 mb-3"
+                         role="status" aria-live="polite">
+                        El borrador se guarda automáticamente de forma segura.
                     </div>
 
                     <!-- CONTENEDORES DE CADA PASO SOAP -->
-                    
+                    <div class="tab-content">
                     <!-- 1. SUBJETIVO -->
-                    <div id="pane-subjetivo" class="soap-pane active-pane">
+                    <div id="pane-subjetivo" class="soap-pane tab-pane fade show active" role="tabpanel" aria-labelledby="soap-tab-subjetivo">
                         <h6 class="text-secondary fw-bold mb-3">Síntomas, enfermedad actual y antecedentes</h6>
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label class="form-label fw-bold mb-0">(S) Motivo y síntomas referidos:</label>
-                                <button type="button" id="btn-dictar-subjective_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('subjective_text')">
-                                    🎤 Dictar
-                                </button>
                             </div>
                             <textarea class="form-control" id="subjective_text" name="chief_complaint" rows="3" placeholder="Síntomas y motivo principal de consulta..."></textarea>
                         </div>
@@ -379,7 +456,7 @@
                     </div>
 
                     <!-- 2. OBJETIVO -->
-                    <div id="pane-objetivo" class="soap-pane">
+                    <div id="pane-objetivo" class="soap-pane tab-pane fade" role="tabpanel" aria-labelledby="soap-tab-objetivo">
                         <h6 class="text-secondary fw-bold mb-3">Registro de Signos Vitales y Medidas Antropométricas</h6>
                         <div class="row g-3 mb-3">
                             <div class="col-md-3">
@@ -414,16 +491,13 @@
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label class="form-label fw-bold mb-0">Descripción Física / Examen Físico Adicional:</label>
-                                <button type="button" id="btn-dictar-objective_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('objective_text')">
-                                    🎤 Dictar
-                                </button>
                             </div>
                             <textarea class="form-control" id="objective_text" name="objective" rows="4" placeholder="Hallazgos al examen físico..."></textarea>
                         </div>
                     </div>
 
                     <!-- 3. ANÁLISIS -->
-                    <div id="pane-analisis" class="soap-pane">
+                    <div id="pane-analisis" class="soap-pane tab-pane fade" role="tabpanel" aria-labelledby="soap-tab-analisis">
                         <h6 class="text-secondary fw-bold mb-3">Razonamiento Clínico y Codificación CIE-10</h6>
                         <div class="mb-3">
                             <label class="form-label fw-bold" for="labResultsSummary">Resultados de laboratorio y paraclínicos considerados</label>
@@ -432,32 +506,64 @@
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label class="form-label fw-bold mb-0">(A) Análisis / Juicio Clínico:</label>
-                                <button type="button" id="btn-dictar-assessment_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('assessment_text')">
-                                    🎤 Dictar
-                                </button>
                             </div>
                             <textarea class="form-control" id="assessment_text" name="assessment" rows="3" placeholder="Razonamiento clínico y diagnósticos presuntivos..."></textarea>
                         </div>
                         <div class="row g-3 mb-3">
                             <div class="col-md-4">
                                 <label class="form-label fw-bold" for="cie10Primary">(A) Diagnóstico principal CIE-10:</label>
-                                <input type="search" class="form-control cie10-code" id="cie10Primary" name="cie10_primary_code" list="cie10Options" autocomplete="off" placeholder="Buscar por código o término">
+                                <div class="cie10-autocomplete position-relative">
+                                    <input type="hidden" id="cie10PrimaryCanonical" name="cie10_primary_code"
+                                           class="cie10-canonical-code" data-canonical-name="cie10_primary_code">
+                                    <input type="hidden" class="cie10-canonical-description">
+                                    <input type="search" class="form-control cie10-code" id="cie10Primary"
+                                           data-canonical-name="cie10_primary_code"
+                                           autocomplete="off" placeholder="Buscar por código o término"
+                                           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false"
+                                           aria-controls="cie10PrimaryOptions">
+                                    <div class="list-group cie10-suggestions position-absolute top-100 start-0 w-100 shadow d-none"
+                                         id="cie10PrimaryOptions" role="listbox"></div>
+                                    <small class="form-text cie10-selection" aria-live="polite"></small>
+                                </div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label fw-bold" for="cie10Secondary">Diagnóstico secundario CIE-10:</label>
-                                <input type="search" class="form-control cie10-code" id="cie10Secondary" name="cie10_secondary_code" list="cie10Options" autocomplete="off">
+                                <div class="cie10-autocomplete position-relative">
+                                    <input type="hidden" id="cie10SecondaryCanonical" name="cie10_secondary_code"
+                                           class="cie10-canonical-code" data-canonical-name="cie10_secondary_code">
+                                    <input type="hidden" class="cie10-canonical-description">
+                                    <input type="search" class="form-control cie10-code" id="cie10Secondary"
+                                           data-canonical-name="cie10_secondary_code"
+                                           autocomplete="off" placeholder="Buscar por código o término"
+                                           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false"
+                                           aria-controls="cie10SecondaryOptions">
+                                    <div class="list-group cie10-suggestions position-absolute top-100 start-0 w-100 shadow d-none"
+                                         id="cie10SecondaryOptions" role="listbox"></div>
+                                    <small class="form-text cie10-selection" aria-live="polite"></small>
+                                </div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label fw-bold" for="cie10Tertiary">Diagnóstico tercero CIE-10:</label>
-                                <input type="search" class="form-control cie10-code" id="cie10Tertiary" name="cie10_tertiary_code" list="cie10Options" autocomplete="off">
+                                <div class="cie10-autocomplete position-relative">
+                                    <input type="hidden" id="cie10TertiaryCanonical" name="cie10_tertiary_code"
+                                           class="cie10-canonical-code" data-canonical-name="cie10_tertiary_code">
+                                    <input type="hidden" class="cie10-canonical-description">
+                                    <input type="search" class="form-control cie10-code" id="cie10Tertiary"
+                                           data-canonical-name="cie10_tertiary_code"
+                                           autocomplete="off" placeholder="Buscar por código o término"
+                                           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false"
+                                           aria-controls="cie10TertiaryOptions">
+                                    <div class="list-group cie10-suggestions position-absolute top-100 start-0 w-100 shadow d-none"
+                                         id="cie10TertiaryOptions" role="listbox"></div>
+                                    <small class="form-text cie10-selection" aria-live="polite"></small>
+                                </div>
                             </div>
                             <div class="col-12 form-text">Busca por código o descripción; el código se valida contra el catálogo CIE-10 al guardar.</div>
                         </div>
-                        <datalist id="cie10Options"></datalist>
                     </div>
 
                     <!-- 4. PLAN -->
-                    <div id="pane-plan" class="soap-pane">
+                    <div id="pane-plan" class="soap-pane tab-pane fade" role="tabpanel" aria-labelledby="soap-tab-plan">
                         <h6 class="text-secondary fw-bold mb-3">Plan Médico, Indicaciones y Prescripción</h6>
                         <div class="mb-3">
                             <label class="form-label fw-bold" for="diagnosticPlan">Exámenes de laboratorio, estudios y paraclínicos</label>
@@ -501,9 +607,6 @@
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <label class="form-label fw-bold mb-0">(P) Tratamiento e indicaciones:</label>
-                                <button type="button" id="btn-dictar-plan_text" class="btn btn-sm btn-outline-secondary" onclick="iniciarDictado('plan_text')">
-                                    🎤 Dictar
-                                </button>
                             </div>
                             <textarea class="form-control" id="plan_text" name="plan" rows="6" placeholder="Medicación recetada, exámenes complementarios solicitados, indicaciones y reposo..."></textarea>
                         </div>
@@ -517,6 +620,7 @@
                         </div>
                     </div>
 
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -527,31 +631,487 @@
     </div>
 </div>
 
+<div class="modal fade" id="soapEditOtpModal" tabindex="-1" aria-labelledby="soapEditOtpTitle"
+     aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-primary text-white">
+                <h2 class="modal-title h5 fw-bold" id="soapEditOtpTitle">Verificar modificación SOAP</h2>
+            </div>
+            <form id="soapEditOtpForm">
+                <div class="modal-body">
+                    <p>Enviamos un código de 6 dígitos a <strong id="soapEditOtpEmail"></strong>. Introduce el código para autorizar el guardado de los cambios.</p>
+                    <div id="soapEditOtpFeedback" class="alert alert-info" role="status" aria-live="polite"></div>
+                    <label class="form-label fw-semibold" for="soapEditOtpCode">Código de verificación</label>
+                    <input class="form-control form-control-lg text-center" id="soapEditOtpCode"
+                           name="otp" inputmode="numeric" autocomplete="one-time-code"
+                           pattern="[0-9]{6}" maxlength="6" required>
+                    <p class="small text-muted mt-2 mb-0">El código vence en <span id="soapEditOtpCountdown"></span>.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Volver a la nota</button>
+                    <button type="submit" class="btn btn-primary fw-bold" id="soapEditOtpSubmit">Verificar y guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <!-- Bootstrap 5 JS Bundle y Scripts de Control -->
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="/assets/js/cie10-autocomplete.js"></script>
+<script src="/assets/js/soap-csrf.js"></script>
 <script>
-    // Cambio de Pestañas
-    function cambiarTab(nombreTab, evento) {
-        evento.preventDefault();
-        document.querySelectorAll('.soap-pane').forEach(pane => pane.classList.remove('active-pane'));
-        document.querySelectorAll('.soap-tab-btn').forEach(btn => btn.classList.remove('active-tab'));
-        document.getElementById('pane-' + nombreTab).classList.add('active-pane');
-        evento.currentTarget.classList.add('active-tab');
+    const soapDraftPatientId = <%- JSON.stringify(paciente.id) %>;
+    const soapDraftUrl = `/patients/${encodeURIComponent(soapDraftPatientId)}/soap-draft`;
+    const soapForm = document.getElementById('formSoap');
+    const soapCsrfClient = window.SIGEMEDSoapCsrf.createSoapCsrfClient({
+        fetchImpl: window.fetch.bind(window),
+        getToken: () => soapForm.elements._csrf.value,
+        setToken: (token) => {
+            document.querySelectorAll('input[name="_csrf"]').forEach((input) => {
+                input.value = token;
+            });
+        },
+    });
+    const soapModal = document.getElementById('modalNuevaNotaSoap');
+    const soapEditOtpModalElement = document.getElementById('soapEditOtpModal');
+    const soapEditOtpModal = bootstrap.Modal.getOrCreateInstance(soapEditOtpModalElement);
+    const soapEditOtpForm = document.getElementById('soapEditOtpForm');
+    const soapEditOtpFeedback = document.getElementById('soapEditOtpFeedback');
+    const soapEditOtpCode = document.getElementById('soapEditOtpCode');
+    const soapDraftStatus = document.getElementById('soapDraftStatus');
+    let soapDraftTimer;
+    let soapDraftSaveChain = Promise.resolve(true);
+    let soapDraftRestoring = false;
+    let soapDraftEditedWhileRestoring = false;
+    let soapAllowSubmit = false;
+    let soapLastSavedSnapshot = null;
+    let soapOtpApprovedChallengeId = '';
+    let soapOtpExpiresAt = null;
+    let soapOtpCountdownTimer;
+
+    const soapOtpFieldNames = [
+        'chief_complaint', 'current_illness', 'relevant_background',
+        'blood_pressure', 'heart_rate', 'temperature', 'weight', 'height',
+        'respiratory_rate', 'oxygen_saturation', 'objective', 'lab_results_summary',
+        'assessment', 'cie10_primary_code', 'cie10_secondary_code', 'cie10_tertiary_code',
+        'diagnostic_plan', 'therapeutic_plan', 'plan', 'education_recommendations', 'follow_up_date',
+        'study_priority', 'study_instructions', 'study_ids',
+    ];
+
+    // Administra la captura, restauración y sincronización segura del borrador SOAP.
+    function setSoapDraftStatus(message, status = 'info') {
+        soapDraftStatus.className = `alert alert-${status} soap-draft-status py-2 mb-3`;
+        soapDraftStatus.textContent = message;
+    }
+
+    function soapRequestErrorMessage(error, fallback) {
+        if (error.code === 'session_expired') {
+            return 'La sesión expiró. Inicia sesión nuevamente para continuar.';
+        }
+        if (error.message === 'csrf_token_mismatch') {
+            return 'No se pudo sincronizar la seguridad de la sesión. Actualiza la página e inténtalo de nuevo.';
+        }
+        return error.message || fallback;
+    }
+
+    function collectSoapDraft() {
+        const data = {};
+        soapForm.querySelectorAll('[name]').forEach((field) => {
+            if (field.name === '_csrf' || field.name === 'consultation_id' || field.name === 'appointment_id') return;
+            if (field.name === 'study_ids') return;
+            data[field.name] = field.value;
+        });
+        document.querySelectorAll('.cie10-autocomplete').forEach((container) => {
+            const input = container.querySelector('.cie10-code');
+            const canonicalCode = container.querySelector('.cie10-canonical-code');
+            const description = container.querySelector('.cie10-canonical-description');
+            data[`${canonicalCode.dataset.canonicalName}_description`] = description.value;
+            if (!canonicalCode.value && input.value.trim()) {
+                data[canonicalCode.dataset.canonicalName] = input.value.trim();
+            }
+        });
+        data.study_ids = [...soapForm.querySelectorAll('.study-order-option:checked')].map((field) => field.value);
+        return {
+            consultation_id: soapForm.elements.consultation_id.value || null,
+            data,
+        };
+    }
+
+    function soapDraftHasContent(data) {
+        return Object.entries(data).some(([key, value]) => (
+            key === 'study_ids' ? value.length > 0 : String(value).trim().length > 0
+        ));
+    }
+
+    function applySoapDraft(data) {
+        Object.entries(data).forEach(([name, value]) => {
+            if (name === 'study_ids') {
+                const selectedIds = new Set(value);
+                soapForm.querySelectorAll('.study-order-option').forEach((field) => {
+                    field.checked = selectedIds.has(field.value);
+                });
+                return;
+            }
+            if (name.endsWith('_description')) {
+                const canonicalName = name.slice(0, -'_description'.length);
+                const codeField = document.querySelector(
+                    `.cie10-canonical-code[data-canonical-name="${canonicalName}"]`
+                );
+                const description = codeField?.closest('.cie10-autocomplete')
+                    .querySelector('.cie10-canonical-description');
+                if (description && typeof value === 'string') description.value = value;
+                return;
+            }
+            const field = soapForm.elements.namedItem(name);
+            if (field && typeof value === 'string') field.value = value;
+        });
+        document.querySelectorAll('.cie10-autocomplete').forEach((container) => {
+            const input = container.querySelector('.cie10-code');
+            const canonicalCode = container.querySelector('.cie10-canonical-code');
+            const description = container.querySelector('.cie10-canonical-description');
+            if (canonicalCode.value) {
+                input.value = description.value
+                    ? `${canonicalCode.value} - ${description.value}`
+                    : canonicalCode.value;
+                input.dataset.selectedCode = canonicalCode.value;
+                input.dataset.selectedDisplay = input.value;
+            }
+        });
+    }
+
+    async function restoreSoapDraft() {
+        const context = collectSoapDraft().consultation_id || '';
+        soapDraftEditedWhileRestoring = false;
+        soapDraftRestoring = true;
+        soapLastSavedSnapshot = JSON.stringify(collectSoapDraft());
+        setSoapDraftStatus('Buscando un borrador guardado…');
+        try {
+            const response = await fetch(`${soapDraftUrl}?consultation_id=${encodeURIComponent(context)}`, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { Accept: 'application/json' },
+            });
+            if (!response.ok) throw new Error('No se pudo consultar el borrador.');
+            const result = await response.json();
+            if (soapDraftEditedWhileRestoring || (collectSoapDraft().consultation_id || '') !== context) return;
+            if (result.draft) {
+                applySoapDraft(result.draft);
+                const savedAt = new Date(result.updated_at);
+                const savedAtText = Number.isNaN(savedAt.getTime())
+                    ? ''
+                    : ` (${savedAt.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' })})`;
+                setSoapDraftStatus(`Borrador recuperado automáticamente${savedAtText}.`, 'success');
+            } else {
+                setSoapDraftStatus('El borrador se guarda automáticamente de forma segura.', 'info');
+            }
+            soapLastSavedSnapshot = JSON.stringify(collectSoapDraft());
+        } catch (error) {
+            setSoapDraftStatus('No se pudo recuperar el borrador. Puedes continuar y guardar la evolución al finalizar.', 'warning');
+            console.error('Error al recuperar borrador SOAP:', error);
+        } finally {
+            soapDraftRestoring = false;
+            if (soapDraftEditedWhileRestoring) {
+                soapDraftEditedWhileRestoring = false;
+                scheduleSoapDraftSave();
+            }
+        }
+    }
+
+    async function sendSoapDraft(method, payload) {
+        const { response, result } = await soapCsrfClient.request(soapDraftUrl + (payload.consultation_id
+            ? `?consultation_id=${encodeURIComponent(payload.consultation_id)}`
+            : ''), {
+            method,
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(method === 'DELETE'
+                ? {}
+                : { consultation_id: payload.consultation_id, data: payload.data }),
+        });
+        if (!response.ok) throw new Error(result.error || 'No se pudo guardar el borrador.');
+        return result;
+    }
+
+    async function saveSoapDraft() {
+        if (soapDraftRestoring) return false;
+        const payload = collectSoapDraft();
+        const snapshot = JSON.stringify(payload);
+        const saveOperation = soapDraftSaveChain.catch(() => false).then(async () => {
+            if (snapshot === soapLastSavedSnapshot) return true;
+            setSoapDraftStatus('Guardando borrador…');
+            try {
+                if (soapDraftHasContent(payload.data)) {
+                    await sendSoapDraft('PUT', payload);
+                } else {
+                    await sendSoapDraft('DELETE', payload);
+                }
+                soapLastSavedSnapshot = snapshot;
+                setSoapDraftStatus('Borrador guardado automáticamente.', 'success');
+                return true;
+            } catch (error) {
+                if (error.code === 'session_expired') {
+                    setSoapDraftStatus('La sesión expiró. Inicia sesión nuevamente para continuar con esta evolución.', 'danger');
+                } else {
+                    setSoapDraftStatus('No se pudo guardar el borrador. Revisa la conexión; la evolución completa aún puede guardarse al finalizar.', 'warning');
+                }
+                console.error('Error al guardar borrador SOAP:', error);
+                return false;
+            }
+        });
+        soapDraftSaveChain = saveOperation;
+        return saveOperation;
+    }
+
+    // Requests an OTP for the exact saved-note values currently shown in the SOAP form.
+    async function requestSoapEditOtp() {
+        const consultationId = soapForm.elements.consultation_id.value;
+        const patientId = soapDraftPatientId;
+        const soapData = {};
+        soapOtpFieldNames.forEach((name) => {
+            if (name === 'study_ids') {
+                soapData[name] = [...soapForm.querySelectorAll('.study-order-option:checked')]
+                    .map((field) => field.value);
+                return;
+            }
+            const field = soapForm.elements.namedItem(name);
+            soapData[name] = field ? field.value : '';
+        });
+        soapEditOtpFeedback.className = 'alert alert-info';
+        soapEditOtpFeedback.textContent = 'Solicitando código de verificación…';
+        soapEditOtpCode.value = '';
+        document.getElementById('soapEditOtpSubmit').disabled = false;
+        try {
+            const { response, result } = await soapCsrfClient.request(
+                `/patients/${encodeURIComponent(patientId)}/consultations/${encodeURIComponent(consultationId)}/soap-edit-otp/request`,
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ soap_data: soapData }),
+                }
+            );
+            if (!response.ok) throw new Error(result.error || 'No se pudo solicitar la verificación.');
+            document.getElementById('soapEditOtpEmail').textContent = result.maskedEmail;
+            soapOtpExpiresAt = new Date(result.expiresAt);
+            soapEditOtpFeedback.className = 'alert alert-info';
+            soapEditOtpFeedback.textContent = 'El código fue enviado. La nota solo se actualizará después de verificarlo.';
+            soapEditOtpModal.show();
+            updateSoapOtpCountdown();
+            clearInterval(soapOtpCountdownTimer);
+            soapOtpCountdownTimer = window.setInterval(updateSoapOtpCountdown, 1000);
+        } catch (error) {
+            soapEditOtpFeedback.className = 'alert alert-danger';
+            soapEditOtpFeedback.textContent = soapRequestErrorMessage(
+                error,
+                'No se pudo solicitar la verificación.'
+            );
+        }
+    }
+
+    // Displays the remaining server-issued OTP lifetime in the verification dialog.
+    function updateSoapOtpCountdown() {
+        const remainingSeconds = Math.max(0, Math.ceil((soapOtpExpiresAt - Date.now()) / 1000));
+        const minutes = Math.floor(remainingSeconds / 60);
+        const seconds = String(remainingSeconds % 60).padStart(2, '0');
+        document.getElementById('soapEditOtpCountdown').textContent = `${minutes}:${seconds}`;
+        if (remainingSeconds === 0) {
+            clearInterval(soapOtpCountdownTimer);
+            document.getElementById('soapEditOtpSubmit').disabled = true;
+            soapEditOtpFeedback.className = 'alert alert-warning';
+            soapEditOtpFeedback.textContent = 'El código venció. Cierra esta ventana y vuelve a solicitar la verificación.';
+        }
+    }
+
+    // Verifies the OTP before allowing the existing-note form to submit once.
+    soapEditOtpForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const consultationId = soapForm.elements.consultation_id.value;
+        document.getElementById('soapEditOtpSubmit').disabled = true;
+        soapEditOtpFeedback.className = 'alert alert-info';
+        soapEditOtpFeedback.textContent = 'Verificando código…';
+        try {
+            const { response, result } = await soapCsrfClient.request(
+                `/patients/${encodeURIComponent(soapDraftPatientId)}/consultations/${encodeURIComponent(consultationId)}/soap-edit-otp/verify`,
+                {
+                    method: 'POST',
+                    headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ otp: soapEditOtpCode.value }),
+                }
+            );
+            if (!response.ok) throw new Error(result.error || 'El código no pudo verificarse.');
+            soapOtpApprovedChallengeId = result.challengeId;
+            soapForm.elements.soap_edit_challenge_id.value = result.challengeId;
+            clearInterval(soapOtpCountdownTimer);
+            soapEditOtpModal.hide();
+            soapForm.requestSubmit();
+        } catch (error) {
+            soapEditOtpFeedback.className = 'alert alert-danger';
+            soapEditOtpFeedback.textContent = soapRequestErrorMessage(
+                error,
+                'El código no pudo verificarse.'
+            );
+            document.getElementById('soapEditOtpSubmit').disabled = false;
+        }
+    });
+
+    function scheduleSoapDraftSave() {
+        if (soapDraftRestoring) {
+            soapDraftEditedWhileRestoring = true;
+            return;
+        }
+        clearTimeout(soapDraftTimer);
+        setSoapDraftStatus('Cambios pendientes de guardado…');
+        soapDraftTimer = window.setTimeout(() => void saveSoapDraft(), 800);
+    }
+
+    soapModal.addEventListener('show.bs.modal', async () => {
+        try {
+            await soapCsrfClient.refreshToken();
+        } catch (error) {
+            if (error.code === 'session_expired') {
+                setSoapDraftStatus('La sesión expiró. Inicia sesión nuevamente para editar esta evolución.', 'danger');
+                return;
+            }
+            setSoapDraftStatus('No se pudo sincronizar la sesión. Actualiza la página antes de editar.', 'warning');
+            console.error('Error al sincronizar CSRF al abrir SOAP:', error);
+        }
+        await restoreSoapDraft();
+    });
+    soapForm.addEventListener('input', scheduleSoapDraftSave);
+    soapForm.addEventListener('change', scheduleSoapDraftSave);
+    soapModal.addEventListener('hidden.bs.modal', () => {
+        clearTimeout(soapDraftTimer);
+        void saveSoapDraft();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            clearTimeout(soapDraftTimer);
+            void saveSoapDraft();
+        }
+    });
+    window.setInterval(() => {
+        if (soapModal.classList.contains('show')
+            && !soapDraftRestoring
+            && JSON.stringify(collectSoapDraft()) !== soapLastSavedSnapshot) {
+            clearTimeout(soapDraftTimer);
+            void saveSoapDraft();
+        }
+    }, 3000);
+    soapForm.addEventListener('submit', async (event) => {
+        if (soapAllowSubmit) {
+            soapAllowSubmit = false;
+            return;
+        }
+        event.preventDefault();
+        if (soapForm.elements.consultation_id.value && !soapOtpApprovedChallengeId) {
+            await requestSoapEditOtp();
+            return;
+        }
+        clearTimeout(soapDraftTimer);
+        await saveSoapDraft();
+        soapAllowSubmit = true;
+        if (event.submitter) soapForm.requestSubmit(event.submitter);
+        else soapForm.requestSubmit();
+    });
+
+    if (new URLSearchParams(window.location.search).get('startSoap') === '1') {
+        window.addEventListener('DOMContentLoaded', () => {
+            const selectedConsultationId = <%- JSON.stringify(selectedAppointmentConsultationId || '') %>;
+            const existingNoteButton = selectedConsultationId
+                ? document.getElementById(`edit-soap-${selectedConsultationId}`)
+                : null;
+            if (existingNoteButton) cargarDatosEdicion(existingNoteButton);
+            else if (selectedConsultationId) {
+                setSoapDraftStatus(
+                    'La nota vinculada a esta cita ya existe, pero está fuera de la ventana de edición. Está disponible en modo lectura.',
+                    'warning'
+                );
+            }
+            else {
+                limpiarModal();
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('modalNuevaNotaSoap')).show();
+            }
+        });
     }
 
     // Limpiar modal al registrar nueva evolución
     function limpiarModal() {
-        document.getElementById('formSoap').reset();
+        soapForm.reset();
         document.getElementById('consultation_id').value = '';
+        document.getElementById('soap_edit_challenge_id').value = '';
+        soapOtpApprovedChallengeId = '';
+        const appointmentField = document.getElementById('appointment_id');
+        appointmentField.value = appointmentField.dataset.requestedAppointmentId || '';
+        document.querySelectorAll('.cie10-code').forEach((input) => {
+            input.value = '';
+            delete input.dataset.selectedCode;
+            delete input.dataset.selectedDisplay;
+            const canonicalCode = input.closest('.cie10-autocomplete').querySelector('.cie10-canonical-code');
+            const canonicalDescription = input.closest('.cie10-autocomplete').querySelector('.cie10-canonical-description');
+            canonicalCode.value = '';
+            canonicalDescription.value = '';
+            const selection = input.closest('.cie10-autocomplete').querySelector('.cie10-selection');
+            selection.textContent = '';
+            selection.classList.remove('text-success');
+        });
+        document.querySelectorAll('.cie10-suggestions').forEach((suggestions) => {
+            suggestions.replaceChildren();
+            suggestions.classList.add('d-none');
+        });
         document.getElementById('modalSoapLabel').innerText = 'Nueva Evolución Clínica - Estructura SOAP';
-        document.querySelectorAll('.soap-pane').forEach((pane) => pane.classList.remove('active-pane'));
-        document.getElementById('pane-subjetivo').classList.add('active-pane');
-        document.querySelectorAll('.soap-tab-btn').forEach((button, index) => button.classList.toggle('active-tab', index === 0));
+        bootstrap.Tab.getOrCreateInstance(document.getElementById('soap-tab-subjetivo')).show();
+    }
+
+    function setCie10Diagnosis(inputName, code, description) {
+        const input = document.querySelector(`.cie10-code[data-canonical-name="${inputName}"]`);
+        const container = input.closest('.cie10-autocomplete');
+        const canonicalCode = container.querySelector('.cie10-canonical-code');
+        const canonicalDescription = container.querySelector('.cie10-canonical-description');
+        const selection = container.querySelector('.cie10-selection');
+        canonicalCode.value = _cleanNull(code).toUpperCase();
+        canonicalDescription.value = canonicalCode.value ? _cleanNull(description) : '';
+        if (canonicalCode.value) {
+            input.value = window.SIGEMEDCie10Autocomplete.formatCie10Diagnosis({
+                id: 1,
+                code: canonicalCode.value,
+                description: canonicalDescription.value,
+            }) || canonicalCode.value;
+            input.dataset.selectedCode = canonicalCode.value;
+            input.dataset.selectedDisplay = input.value;
+            selection.classList.add('text-success');
+        } else {
+            input.value = '';
+            delete input.dataset.selectedCode;
+            delete input.dataset.selectedDisplay;
+            canonicalDescription.value = '';
+            selection.textContent = '';
+            selection.classList.remove('text-success');
+        }
     }
 
     // Cargar datos en el modal para editar evolución interrumpida
     function cargarDatosEdicion(btn) {
-        document.getElementById('consultation_id').value = btn.getAttribute('data-id');
+        const consultationId = btn.getAttribute('data-id') || '';
+        if (!/^[1-9]\d*$/.test(consultationId)) {
+            throw new Error('El identificador de la nota SOAP no es válido.');
+        }
+        if (!soapForm || !soapModal || !soapForm.elements.consultation_id) {
+            throw new Error('No se pudo inicializar el formulario de edición SOAP.');
+        }
+        soapForm.elements.consultation_id.value = consultationId;
+        document.getElementById('soap_edit_challenge_id').value = '';
+        soapOtpApprovedChallengeId = '';
+        const appointmentField = document.getElementById('appointment_id');
+        appointmentField.value = btn.getAttribute('data-appointment-id') || '';
         
         // Asignación de Textareas
         document.getElementById('subjective_text').value = _cleanNull(btn.getAttribute('data-chief-complaint'), 'Sin registro');
@@ -573,9 +1133,9 @@
         document.querySelector('[name="height"]').value = _cleanNull(btn.getAttribute('data-height'));
         document.querySelector('[name="respiratory_rate"]').value = _cleanNull(btn.getAttribute('data-respiratory-rate'));
         document.querySelector('[name="oxygen_saturation"]').value = _cleanNull(btn.getAttribute('data-oxygen-saturation'));
-        document.querySelector('[name="cie10_primary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-primary'));
-        document.querySelector('[name="cie10_secondary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-secondary'));
-        document.querySelector('[name="cie10_tertiary_code"]').value = _cleanNull(btn.getAttribute('data-cie10-tertiary'));
+        setCie10Diagnosis('cie10_primary_code', btn.getAttribute('data-cie10-primary'), btn.getAttribute('data-cie10-primary-description'));
+        setCie10Diagnosis('cie10_secondary_code', btn.getAttribute('data-cie10-secondary'), btn.getAttribute('data-cie10-secondary-description'));
+        setCie10Diagnosis('cie10_tertiary_code', btn.getAttribute('data-cie10-tertiary'), btn.getAttribute('data-cie10-tertiary-description'));
         const activeStudyIds = new Set((btn.getAttribute('data-study-ids') || '').split(',').filter(Boolean));
         document.querySelectorAll('.study-order-option').forEach((checkbox) => {
             checkbox.checked = activeStudyIds.has(checkbox.value);
@@ -584,10 +1144,21 @@
         document.getElementById('studyInstructions').value = '';
 
         document.getElementById('modalSoapLabel').innerText = 'Completar Evolución Clínica (Edición)';
-        
-        var modal = new bootstrap.Modal(document.getElementById('modalNuevaNotaSoap'));
-        modal.show();
+        setSoapDraftStatus('Nota cargada para completar o modificar. Se solicitará verificación por correo al guardar.');
+        bootstrap.Modal.getOrCreateInstance(soapModal).show();
     }
+
+    document.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-edit-soap]');
+        if (!button) return;
+
+        try {
+            cargarDatosEdicion(button);
+        } catch (error) {
+            console.error('No se pudo abrir la nota SOAP para edición:', error);
+            setSoapDraftStatus(error.message || 'No se pudo abrir la nota para edición.', 'danger');
+        }
+    });
 
     // Función auxiliar para evitar imprimir la palabra "null"
     function _cleanNull(val, defaultText = '') {
@@ -620,82 +1191,178 @@
         });
     });
 
-    document.querySelectorAll('.cie10-code').forEach((input) => {
+    document.querySelectorAll('.cie10-autocomplete').forEach((container) => {
+        const input = container.querySelector('.cie10-code');
+        const suggestions = container.querySelector('.cie10-suggestions');
+        const selectedDescription = container.querySelector('.cie10-selection');
         let request;
-        input.addEventListener('input', async () => {
-            const query = input.value.trim();
-            const options = document.getElementById('cie10Options');
-            if (query.length < 2) {
-                options.replaceChildren();
-                return;
-            }
-            if (request) request.abort();
-            request = new AbortController();
-            try {
-                const response = await fetch(`/api/cie10/search?q=${encodeURIComponent(query)}`, {
-                    headers: { Accept: 'application/json' },
-                    signal: request.signal,
-                });
-                if (!response.ok) throw new Error('No se pudo buscar en el catálogo CIE-10.');
-                const diagnoses = await response.json();
-                options.replaceChildren(...diagnoses.map((diagnosis) => {
-                    const option = document.createElement('option');
-                    option.value = diagnosis.code;
-                    option.label = diagnosis.description;
-                    return option;
-                }));
-            } catch (error) {
-                if (error.name !== 'AbortError') console.error(error);
-            }
-        });
-    });
-</script>
+        let debounceTimer;
+        let activeIndex = -1;
+        let results = [];
+        let latestRequestId = 0;
 
-<!-- Script para Dictado por Voz (Web Speech API) -->
-<script>
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.lang = 'es-ES'; 
-        recognition.interimResults = false;
-
-        let currentTextArea = null;
-
-        function iniciarDictado(textAreaId) {
-            currentTextArea = document.getElementById(textAreaId);
-            recognition.start();
-            const btn = document.getElementById('btn-dictar-' + textAreaId);
-            btn.innerHTML = '🔴 Escuchando...';
-            btn.classList.replace('btn-outline-secondary', 'btn-danger');
+        function closeSuggestions() {
+            suggestions.replaceChildren();
+            suggestions.classList.add('d-none');
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+            activeIndex = -1;
+            results = [];
         }
 
-        recognition.onresult = function(event) {
-            const transcript = event.results[0][0].transcript;
-            if (currentTextArea.value.length > 0) {
-                currentTextArea.value += ' ' + transcript + '.';
-            } else {
-                currentTextArea.value = transcript.charAt(0).toUpperCase() + transcript.slice(1) + '.';
+        function selectDiagnosis(diagnosis) {
+            const canonicalDiagnosis = window.SIGEMEDCie10Autocomplete
+                .canonicalizeCie10Selection(diagnosis);
+            if (!canonicalDiagnosis) {
+                closeSuggestions();
+                selectedDescription.textContent = 'La sugerencia CIE-10 recibida no es válida.';
+                selectedDescription.classList.remove('text-success');
+                console.error('El catálogo devolvió una sugerencia CIE-10 inválida.');
+                return;
             }
-        };
+            const canonicalCode = container.querySelector('.cie10-canonical-code');
+            const canonicalDescriptionField = container.querySelector('.cie10-canonical-description');
+            canonicalCode.value = canonicalDiagnosis.code;
+            canonicalDescriptionField.value = canonicalDiagnosis.description.trim();
+            input.value = window.SIGEMEDCie10Autocomplete.formatCie10Diagnosis(canonicalDiagnosis);
+            selectedDescription.textContent = `${canonicalDiagnosis.code} — ${canonicalDiagnosis.description}`;
+            selectedDescription.classList.add('text-success');
+            input.dataset.selectedCode = canonicalDiagnosis.code;
+            input.dataset.selectedDisplay = input.value;
+            closeSuggestions();
+            input.dataset.skipCie10Search = 'true';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
 
-        recognition.onspeechend = function() { recognition.stop(); };
+        function setActiveOption(nextIndex) {
+            const options = [...suggestions.querySelectorAll('[role="option"]')];
+            if (!options.length) return;
+            activeIndex = (nextIndex + options.length) % options.length;
+            options.forEach((option, index) => {
+                option.classList.toggle('active', index === activeIndex);
+                option.setAttribute('aria-selected', String(index === activeIndex));
+            });
+            input.setAttribute('aria-activedescendant', options[activeIndex].id);
+        }
 
-        recognition.onend = function() {
-            if(currentTextArea) {
-                const btn = document.getElementById('btn-dictar-' + currentTextArea.id);
-                btn.innerHTML = '🎤 Dictar';
-                btn.classList.replace('btn-danger', 'btn-outline-secondary');
+        function renderSuggestions(diagnoses, query) {
+            results = diagnoses;
+            activeIndex = -1;
+            if (!diagnoses.length) {
+                const emptyState = document.createElement('div');
+                emptyState.className = 'list-group-item small text-muted';
+                emptyState.textContent = `No se encontraron diagnósticos para “${query}”.`;
+                suggestions.replaceChildren(emptyState);
+                suggestions.classList.remove('d-none');
+                input.setAttribute('aria-expanded', 'true');
+                return;
             }
-        };
 
-        recognition.onerror = function(event) {
-            console.error('Error de reconocimiento de voz:', event.error);
-            alert('Error al acceder al micrófono. Por favor, verifique los permisos de su navegador.');
-        };
-    } else {
-        console.warn('El dictado por voz no es soportado en este navegador. Se recomienda usar Google Chrome.');
-    }
+            suggestions.replaceChildren(...diagnoses.map((diagnosis, index) => {
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.id = `${input.id}-option-${index}`;
+                option.className = 'list-group-item list-group-item-action';
+                option.setAttribute('role', 'option');
+                option.setAttribute('aria-selected', 'false');
+                const code = document.createElement('strong');
+                code.className = 'd-block';
+                code.textContent = diagnosis.code;
+                const description = document.createElement('span');
+                description.className = 'small text-muted';
+                description.textContent = diagnosis.description;
+                option.append(code, description);
+                option.addEventListener('mousedown', (event) => event.preventDefault());
+                option.addEventListener('click', () => selectDiagnosis(diagnosis));
+                return option;
+            }));
+            suggestions.classList.remove('d-none');
+            input.setAttribute('aria-expanded', 'true');
+        }
+
+        input.addEventListener('input', () => {
+            const requestId = ++latestRequestId;
+            clearTimeout(debounceTimer);
+            if (request) request.abort();
+            if (input.dataset.skipCie10Search === 'true') {
+                delete input.dataset.skipCie10Search;
+                return;
+            }
+            const query = input.value.trim();
+            const canonicalCode = container.querySelector('.cie10-canonical-code');
+            const canonicalDescriptionField = container.querySelector('.cie10-canonical-description');
+            if (input.dataset.selectedCode && input.dataset.selectedDisplay !== query) {
+                delete input.dataset.selectedCode;
+                delete input.dataset.selectedDisplay;
+                selectedDescription.textContent = '';
+                selectedDescription.classList.remove('text-success');
+                canonicalDescriptionField.value = '';
+            }
+            canonicalCode.value = input.dataset.selectedCode && input.dataset.selectedDisplay === query
+                ? input.dataset.selectedCode
+                : query;
+            if (query.length < 2) {
+                closeSuggestions();
+                return;
+            }
+
+            debounceTimer = window.setTimeout(async () => {
+                request = new AbortController();
+                try {
+                    const response = await fetch(`/api/cie10/search?q=${encodeURIComponent(query)}`, {
+                        headers: { Accept: 'application/json' },
+                        cache: 'no-store',
+                        signal: request.signal,
+                    });
+                    const contentType = response.headers.get('content-type') || '';
+                    if (!response.ok || !contentType.includes('application/json')) {
+                        throw new Error('No se pudo consultar el catálogo CIE-10.');
+                    }
+                    const diagnoses = await response.json();
+                    if (!window.SIGEMEDCie10Autocomplete.isCurrentSearchResponse(
+                        requestId,
+                        latestRequestId,
+                        query,
+                        input.value.trim()
+                    )) return;
+                    renderSuggestions(diagnoses, query);
+                } catch (error) {
+                    if (error.name !== 'AbortError'
+                        && window.SIGEMEDCie10Autocomplete.isCurrentSearchResponse(
+                            requestId,
+                            latestRequestId,
+                            query,
+                            input.value.trim()
+                        )) {
+                        closeSuggestions();
+                        selectedDescription.textContent = 'No se pudo realizar la búsqueda. Inténtalo nuevamente.';
+                        selectedDescription.classList.remove('text-success');
+                        console.error('Error en el autocompletado CIE-10:', error);
+                    }
+                }
+            }, 250);
+        });
+
+        input.addEventListener('keydown', (event) => {
+            if (suggestions.classList.contains('d-none')) return;
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setActiveOption(activeIndex + 1);
+            } else if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setActiveOption(activeIndex < 0 ? results.length - 1 : activeIndex - 1);
+            } else if (event.key === 'Enter' && activeIndex >= 0) {
+                event.preventDefault();
+                selectDiagnosis(results[activeIndex]);
+            } else if (event.key === 'Escape') {
+                closeSuggestions();
+            }
+        });
+
+        input.addEventListener('blur', () => {
+            window.setTimeout(closeSuggestions, 150);
+        });
+    });
 </script>
 
 </body>

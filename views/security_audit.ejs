@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Seguridad y auditoría | SIGEMED</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<main class="container py-4 py-lg-5">
+    <header class="mb-4">
+        <p class="text-primary fw-semibold text-uppercase small mb-1">Configuración y seguridad</p>
+        <h1 class="h2 fw-bold">Seguridad y auditoría</h1>
+        <p class="text-muted mb-0">Eventos recientes de acceso y operación. Esta vista es de solo lectura.</p>
+    </header>
+
+    <div class="alert alert-info" role="note">
+        Se muestran hasta 100 eventos recientes. Los detalles clínicos y los datos de carga no se exponen en esta pantalla.
+    </div>
+    <p class="small text-muted">La gestión de respaldos y políticas de privacidad no está disponible como operación desde esta pantalla.</p>
+
+    <section class="card border-0 shadow-sm" aria-label="Eventos recientes de auditoría">
+        <div class="card-body">
+            <% if (auditEvents.length) { %>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col">Fecha y hora</th>
+                                <th scope="col">Usuario</th>
+                                <th scope="col">Evento</th>
+                                <th scope="col">Recurso</th>
+                                <th scope="col">Paciente ID</th>
+                                <th scope="col">Dirección IP</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <% auditEvents.forEach((event) => { %>
+                                <tr>
+                                    <td class="text-nowrap"><%= new Date(event.occurred_at).toLocaleString('es-VE') %></td>
+                                    <td><%= event.user_name || (event.user_id ? `Usuario #${event.user_id}` : 'Sistema') %></td>
+                                    <td><code><%= event.event_type %></code></td>
+                                    <td>
+                                        <%= event.resource_type %>
+                                        <% if (event.resource_id) { %><span class="text-muted">#<%= event.resource_id %></span><% } %>
+                                    </td>
+                                    <td><%= event.patient_id || '—' %></td>
+                                    <td><%= event.ip_address || '—' %></td>
+                                </tr>
+                            <% }) %>
+                        </tbody>
+                    </table>
+                </div>
+            <% } else { %>
+                <div class="text-center text-muted py-5">
+                    <p class="h5">Aún no hay eventos para mostrar</p>
+                    <p class="mb-0">Los eventos registrados aparecerán aquí conforme se utilice el sistema.</p>
+                </div>
+            <% } %>
+        </div>
+    </section>
+</main>
+</body>
+</html>

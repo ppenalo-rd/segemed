@@ -4,6 +4,29 @@ const DIAGNOSIS_FIELDS = [
   ['cie10_tertiary_code', null],
 ];
 
+function parseLegacyCie10Reference(assessment) {
+  const text = typeof assessment === 'string' ? assessment : '';
+  const marker = '| Ref. CIE-10:';
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex < 0) return { assessment: text, code: '', description: '' };
+
+  const cleanAssessment = text.slice(0, markerIndex).trim();
+  const reference = text.slice(markerIndex + marker.length).trim();
+  const match = reference.match(/^([A-Z][A-Z0-9.]{2,59})\s*[-—]\s*(.+)$/i);
+  return {
+    assessment: cleanAssessment,
+    code: match ? match[1].toUpperCase() : '',
+    description: match ? match[2].trim() : '',
+  };
+}
+
+function formatDiagnosisLabel(code, description) {
+  const normalizedCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
+  if (!normalizedCode) return '';
+  const normalizedDescription = typeof description === 'string' ? description.trim() : '';
+  return normalizedDescription ? `${normalizedCode} — ${normalizedDescription}` : normalizedCode;
+}
+
 function normalizeDiagnosisCodes(body) {
   const codes = DIAGNOSIS_FIELDS.map(([field, legacyField]) =>
     String(body[field] || (legacyField ? body[legacyField] : '') || '').trim().toUpperCase()
@@ -26,4 +49,8 @@ function normalizeDiagnosisCodes(body) {
   return codes;
 }
 
-module.exports = { normalizeDiagnosisCodes };
+module.exports = {
+  formatDiagnosisLabel,
+  normalizeDiagnosisCodes,
+  parseLegacyCie10Reference,
+};

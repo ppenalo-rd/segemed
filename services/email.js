@@ -57,4 +57,21 @@ async function sendPasswordChangeOtp({ to, name, code, expiresMinutes = 5 }, env
   });
 }
 
-module.exports = { createEmailTransport, sendLoginOtp, sendPasswordChangeOtp };
+async function sendSoapModificationOtp({ to, name, code, expiresMinutes = 5 }, env = process.env) {
+  const transport = createEmailTransport(env);
+  const safeName = escapeHtml(name || 'médico');
+  await transport.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject: 'Verificación para modificar una nota SOAP SIGEMED',
+    text: `Hola ${name || 'médico'}, el código para autorizar la modificación de una nota SOAP es ${code}. Vence en ${expiresMinutes} minutos. Si no solicitaste esta modificación, ignora este mensaje e informa al responsable de seguridad.`,
+    html: `<p>Hola ${safeName},</p><p>Se solicitó una modificación de una nota SOAP en SIGEMED. Introduce este código para autorizarla:</p><p style="font-size:28px;font-weight:bold;letter-spacing:8px">${code}</p><p>Este código vence en ${expiresMinutes} minutos. Si no solicitaste la modificación, ignora este mensaje e informa al responsable de seguridad.</p>`,
+  });
+}
+
+module.exports = {
+  createEmailTransport,
+  sendLoginOtp,
+  sendPasswordChangeOtp,
+  sendSoapModificationOtp,
+};

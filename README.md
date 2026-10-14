@@ -30,7 +30,7 @@ La base debe contar con el esquema inicial antes de aplicar las migraciones vers
 npm run db:migrate
 ```
 
-El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`. La migración `009_email_otp_authentication.sql` crea la tabla de desafíos OTP. La migración `011_user_role_check.sql` mantiene compatibles los valores históricos de `users.role` y habilita las claves de rol normalizadas usadas por la aplicación. La migración `012_password_change_otp.sql` crea los desafíos aislados para verificar cambios de contraseña.
+El ejecutor procesa en orden los archivos `.sql` de `migrations/`; las migraciones deben poder repetirse según las garantías definidas por cada archivo. La migración `007_global_audit_security.sql` añade índices y refuerza la inmutabilidad de `access_audit_logs`. La migración `009_email_otp_authentication.sql` crea la tabla de desafíos OTP. La migración `011_user_role_check.sql` mantiene compatibles los valores históricos de `users.role` y habilita las claves de rol normalizadas usadas por la aplicación. La migración `012_password_change_otp.sql` crea los desafíos aislados para verificar cambios de contraseña. La migración `013_soap_note_drafts.sql` añade borradores SOAP temporales asociados al paciente, médico y consulta, separados de las notas clínicas definitivas. La migración `014_soap_edit_two_factor_audit.sql` añade desafíos OTP ligados a modificaciones SOAP y una bitácora de cambios por campo protegida contra actualizaciones y borrados.
 
 ### Autenticación de dos factores por correo
 
@@ -62,16 +62,16 @@ npm test
 
 ### Menú principal post-login
 
-Después de iniciar sesión, la aplicación redirige a `/dashboard`, el menú principal de accesos. Las tarjetas se filtran por los roles activos de la sesión:
+Después de iniciar sesión, la aplicación redirige a `/dashboard`, organizado por áreas y filtrado por rol activo:
 
-- `admissions` y `system_admin`: Admisión y Agenda; Facturación y Caja.
-- `doctor` y `nurse` (personal clínico): Consulta Médica / SOAP y Recetas.
-- `audit_security` y `system_admin`: Reportes y Estadísticas.
-- `system_admin`: Gestión de Usuarios y Configuración.
+- `doctor`: Consultorio Médico y Evolución, que abre por defecto la agenda de hoy. El médico puede consultar el directorio clínico desde ese flujo.
+- `admissions`: Admisión y Sala de Espera y Gestión de Pacientes.
+- `system_admin`: Facturación y Caja, Reportes, Configuración del Sistema y Seguridad/Auditoría.
+- `audit_security`: Reportes y Seguridad/Auditoría, en modo de solo lectura.
 
-Las rutas de los módulos conservan sus propios controles de autorización; ocultar una tarjeta no sustituye las verificaciones RBAC del servidor. En Facturación y Caja, `system_admin` tiene acceso de consulta a las facturas, mientras que solo `admissions` puede crear o modificar facturas, emitirlas, registrar pagos o procesar reversiones.
+Las rutas del servidor aplican RBAC independientemente de las tarjetas y enlaces del menú. Recepción puede gestionar citas y datos demográficos, pero no abrir historias clínicas. Administración no obtiene acceso transversal a la operación clínica ni a la admisión. Auditoría no puede administrar usuarios ni acceder a historias clínicas.
 
-En `/admin/users`, los administradores y el personal de auditoría autorizado pueden crear cuentas o editar el nombre, correo, estado y perfiles permitidos desde la tabla de cuentas. Los cambios de acceso se guardan de forma transaccional, se registran en auditoría y revocan las sesiones existentes del usuario afectado. El personal de auditoría no puede asignar perfiles administrativos ni desactivar cuentas de administradores. Desde la misma pantalla, también se puede asociar una cuenta con perfil Médico a un profesional existente o vincular un perfil médico sin asignar a una cuenta activa ya existente. Solo los perfiles asociados aparecen como médicos disponibles para agendar; la agenda indica cómo completar el vínculo cuando no hay ninguno habilitado.
+En `/admin/users`, solo `system_admin` puede crear cuentas, editar accesos y vincular cuentas médicas. Los cambios de acceso se guardan de forma transaccional, se registran en auditoría y revocan las sesiones existentes del usuario afectado. Desde esa pantalla también se pueden asociar cuentas médicas con profesionales existentes. Solo los perfiles asociados aparecen como médicos disponibles para agendar.
 
 El directorio médico utiliza `specialties` y la relación `doctor_specialties` para asociar especialidades al perfil profesional, con una especialidad principal. El catálogo inicial incluye Medicina General, Pediatría, Traumatología, Cardiología y Ginecología. Ejecuta `npm run db:migrate` para aplicar `010_doctor_specialties_seed.sql`; esta migración también asocia los perfiles existentes cuando su campo de especialidad coincide con una de esas especialidades. Los selectores de la agenda muestran únicamente médicos con perfil no anulado, cuenta activa y rol Médico activo.
 
@@ -79,9 +79,11 @@ En `/admin/doctors`, el botón **Editar** abre el perfil con los datos existente
 
 ### Calendario médico
 
-La ruta `/agenda` ofrece una vista mensual, semanal y de lista con filtros por médico y sede. Las citas se cargan bajo demanda desde `GET /api/calendar/appointments` usando el rango visible del calendario; el rango se valida y limita a 62 días. El listado operativo queda acotado a los últimos tres días y los próximos 30; al abrir una cita histórica, `?date=YYYY-MM-DD` centra el listado y calendario en esa fecha. Al pasar o enfocar una cita se muestran hora, paciente, documento, motivo, médico, sede y estado. Al seleccionarla se abre su fila en la agenda. Al seleccionar un día se abre el formulario de agendamiento con la fecha precargada; su envío AJAX codifica los campos como `application/x-www-form-urlencoded`, formato que procesa el middleware Express junto con el token CSRF.
+La ruta `/agenda` ofrece al perfil `admissions` una vista mensual, semanal y de lista con filtros por médico y sede. Las citas se cargan bajo demanda desde `GET /api/calendar/appointments` usando el rango visible del calendario; el rango se valida y limita a 62 días. El listado operativo queda acotado a los últimos tres días y los próximos 30; al abrir una cita histórica, `?date=YYYY-MM-DD` centra el listado y calendario en esa fecha. Al seleccionar un día se abre el formulario de agendamiento con la fecha precargada; su envío AJAX codifica los campos como `application/x-www-form-urlencoded`, formato que procesa el middleware Express junto con el token CSRF. Desde el listado, Recepción puede llamar al paciente de forma asíncrona, lo que cambia la cita a `In Consultation` y registra la transición en auditoría.
 
-La creación continúa usando `POST /appointments/create` y `GET /api/doctor-availability`; el servidor vuelve a validar la matriz de horarios, duración configurada para el tipo de atención y conflictos antes de guardar. Los cambios de estado se auditan y vuelven a mostrar la cita enfocada en su fecha original. Las cuentas con rol `doctor` solo reciben su propio calendario salvo que tengan además permisos de administración, admisión o auditoría. La vista carga FullCalendar 6.1.19 desde jsDelivr; el Content Security Policy permite ese origen para scripts.
+La creación continúa usando `POST /appointments/create` y `GET /api/doctor-availability`; ambas operaciones quedan restringidas a Recepción y el servidor vuelve a validar la matriz de horarios, la duración y los conflictos antes de guardar. Los cambios de estado se procesan mediante `POST /appointments/:id/status`, se autorizan para médicos y admisión y se auditan. El médico solo puede cambiar el estado de sus propias citas. La agenda médica de hoy permite abrir directamente la historia clínica con el `appointment_id`; al guardar SOAP, el servidor valida que la cita corresponda al paciente y al médico autenticado y vincula la consulta a la cita. La vista carga FullCalendar 6.1.19 desde jsDelivr; el Content Security Policy permite ese origen para scripts.
+
+Las modificaciones de notas SOAP guardadas están disponibles solo para médicos activos. Antes de guardar una edición, el médico debe validar un OTP de seis dígitos enviado al correo de su cuenta; el desafío expira, limita intentos y queda ligado a la nota y a la huella de los campos enviados. Las diferencias reales se escriben por campo en `soap_audit_logs`, dentro de la transacción clínica, con valores previo y nuevo, usuario, fecha e IP. La bitácora tiene un trigger de solo inserción y no almacena contenido clínico en los logs generales de acceso.
 
 ### Refresco programado de reportería
 
@@ -98,8 +100,10 @@ En Windows, configura una tarea en el Programador de tareas que ejecute `npm.cmd
 - Los eventos de acceso, autenticación, consulta de historia clínica, guardado SOAP, acciones de prescripción y reportes se escriben en `access_audit_logs`; las auditorías de facturación permanecen en `billing_audit_events`.
 - Las escrituras SOAP y las acciones de prescripción incluyen su evento de auditoría dentro de la misma transacción que los cambios.
 - Los registros de auditoría son append-only a nivel de base de datos. No se deben deshabilitar los triggers de inmutabilidad en operaciones normales.
+- `/admin/security/audit` muestra hasta 100 eventos recientes a `system_admin` y `audit_security`. Es una vista de solo lectura y omite los detalles JSON y cualquier contenido clínico.
+- La vista no administra respaldos ni políticas de privacidad; esos procesos aún requieren procedimientos operativos externos.
 - El detalle auditado contiene metadatos operativos; no registra contraseñas ni el contenido clínico del SOAP o de las recetas.
-- La autorización de rutas sigue los roles y reglas de la aplicación; las acciones de facturación se restringen al personal habilitado de Recepción/Caja y administración según el flujo.
+- La autorización de rutas sigue los roles y reglas de la aplicación; la gestión de facturas queda restringida a `system_admin`.
 - Trata los PDFs, los datos clínicos, los respaldos y los logs como información sensible; limita su acceso y define retención y restauración conforme a la normativa aplicable.
 
 ## Pruebas

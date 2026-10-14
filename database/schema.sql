@@ -511,6 +511,14 @@ CREATE INDEX IF NOT EXISTS appointments_patient_date_idx
     ON appointments (patient_id, appointment_date);
 CREATE INDEX IF NOT EXISTS appointments_doctor_date_idx
     ON appointments (doctor_id, appointment_date);
+ALTER TABLE medical_consultations
+    ADD COLUMN IF NOT EXISTS soap_last_saved_at TIMESTAMPTZ;
+UPDATE medical_consultations
+SET soap_last_saved_at = created_at
+WHERE soap_last_saved_at IS NULL;
+ALTER TABLE medical_consultations
+    ALTER COLUMN soap_last_saved_at SET DEFAULT CURRENT_TIMESTAMP,
+    ALTER COLUMN soap_last_saved_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS consultations_patient_created_idx
     ON medical_consultations (patient_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS consultation_diagnoses_consultation_idx
