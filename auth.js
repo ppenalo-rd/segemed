@@ -17,6 +17,15 @@ function canAssignRole(actorRoles, targetRole) {
   return actorRoles.includes('audit_security') && AUDIT_ASSIGNABLE_ROLES.has(targetRole);
 }
 
+function hasRequiredRole(userRoles, allowedRoles) {
+  if (userRoles.includes('system_admin')) return true;
+  return allowedRoles.some((role) => ROLE_ALIASES[role]?.some((alias) => userRoles.includes(alias)));
+}
+
+function isActiveDoctor(user) {
+  return Boolean(user?.roles?.includes('doctor'));
+}
+
 async function verifyCredentials(email, password) {
   const { rows } = await db.query(
     `SELECT u.id, u.name, u.email, u.password_hash, u.active,
@@ -74,17 +83,32 @@ function requireAuthentication(req, res, next) {
 function requireRole(...allowedRoles) {
   return (req, res, next) => {
     const userRoles = req.session.user?.roles || [];
-    if (!allowedRoles.some((role) => ROLE_ALIASES[role]?.some((alias) => userRoles.includes(alias)))) {
+    if (!hasRequiredRole(userRoles, allowedRoles)) {
       return res.status(403).send('No tienes permisos para realizar esta acción.');
     }
     next();
   };
 }
 
+async function requireActiveDoctor(req, res, next) {
+  try {
+    const user = await getActiveUserById(req.session.user.id);
+    if (!isActiveDoctor(user)) {
+      return res.status(403).send('Solo un médico activo puede realizar esta acción clínica.');
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   canAssignRole,
   getActiveUserById,
+  hasRequiredRole,
+  isActiveDoctor,
   requireAuthentication,
+  requireActiveDoctor,
   requireRole,
   verifyCredentials,
 };

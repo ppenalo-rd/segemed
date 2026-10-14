@@ -82,7 +82,11 @@
                             <tr id="appointment-<%= cita.appointment_id %>" class="<%= cita.status === 'In Consultation' ? 'appointment-called' : '' %>">
                                 <td class="appointment-time"><%= cita.appointment_time || 'Sin hora' %></td>
                                 <td class="fw-semibold">
-                                    <% if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
+                                    <% if (currentUser.roles.includes('system_admin')) { %>
+                                        <a href="/patients/<%= cita.patient_id %>/history#soap-history">
+                                            <%= cita.first_name %> <%= cita.last_name %>
+                                        </a>
+                                    <% } else if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
                                         <a href="/patients/<%= cita.patient_id %>/history?startSoap=1&amp;appointment_id=<%= cita.appointment_id %>#new-soap">
                                             <%= cita.first_name %> <%= cita.last_name %>
                                         </a>

@@ -16,7 +16,7 @@
             <h2 class="text-primary fw-bold">Directorio de Pacientes</h2>
             <p class="text-muted mb-0">Gestión centralizada de pacientes - Atención Primaria (APS)</p>
         </div>
-        <% if (currentUser.roles.includes('admissions')) { %>
+        <% if (currentUser.roles.includes('admissions') || currentUser.roles.includes('system_admin')) { %>
             <button class="btn btn-success shadow-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoPaciente">
                 + Nuevo Paciente
             </button>
@@ -83,13 +83,13 @@
                                     <td><%= paciente.phone || 'N/A' %></td>
                                     <td><%= paciente.email || 'No registrado' %></td>
                                     <td class="text-center">
-                                        <% if (currentUser.roles.includes('doctor')) { %>
+                                        <% if (currentUser.roles.includes('doctor') || currentUser.roles.includes('system_admin')) { %>
                                             <a href="/patients/<%= paciente.id %>/history" class="btn btn-sm btn-outline-primary mb-1 fw-bold shadow-sm">
                                                 Ver <%= paciente.medical_record_number || 'Historia' %>
                                             </a>
                                         <% } %>
                                         
-                                        <% if (currentUser.roles.includes('admissions')) { %>
+                                        <% if (currentUser.roles.includes('admissions') || currentUser.roles.includes('system_admin')) { %>
                                             <button
                                                 class="btn btn-sm btn-outline-warning mb-1 shadow-sm"
                                                 type="button"
@@ -139,7 +139,7 @@
     </div>
 </div>
 
-<% if (currentUser.roles.includes('admissions')) { %>
+<% if (currentUser.roles.includes('admissions') || currentUser.roles.includes('system_admin')) { %>
 <!-- VENTANA MODAL: Formulario de Nuevo Paciente -->
 <div class="modal fade" id="modalNuevoPaciente" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
@@ -200,7 +200,7 @@
 <% } %>
 
 <!-- VENTANA MODAL: Formulario de Editar Paciente -->
-<% if (currentUser.roles.includes('admissions')) { %>
+<% if (currentUser.roles.includes('admissions') || currentUser.roles.includes('system_admin')) { %>
 <div class="modal fade" id="modalEditarPaciente" tabindex="-1" aria-labelledby="modalEditarLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">

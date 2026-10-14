@@ -6,7 +6,7 @@ const bcrypt = require('bcryptjs');
 const path = require('node:path');
 const { startSmtpSink } = require('../test-support/smtp-sink');
 require('dotenv').config();
-const { canAssignRole } = require('../auth');
+const { canAssignRole, hasRequiredRole, isActiveDoctor } = require('../auth');
 
 test('administradores del sistema pueden asignar perfiles activos', () => {
   assert.equal(canAssignRole(['system_admin'], 'system_admin'), true);
@@ -25,6 +25,14 @@ test('auditoría puede asignar perfiles operativos, pero no privilegios administ
 test('otros perfiles no pueden asignar roles', () => {
   assert.equal(canAssignRole(['doctor'], 'admissions'), false);
   assert.equal(canAssignRole([], 'doctor'), false);
+});
+
+test('el administrador puede consultar rutas de módulos sin asumir el rol clínico', () => {
+  assert.equal(hasRequiredRole(['system_admin'], ['doctor']), true);
+  assert.equal(hasRequiredRole(['system_admin'], ['admissions']), true);
+  assert.equal(isActiveDoctor({ id: 1, roles: ['system_admin'] }), false);
+  assert.equal(isActiveDoctor({ id: 2, roles: ['doctor'] }), true);
+  assert.equal(isActiveDoctor(null), false);
 });
 
 test('producción rechaza secretos de sesión ausentes, cortos o de ejemplo', () => {
@@ -52,11 +60,11 @@ test('dashboard post-login redirige y filtra módulos según los roles', {
   const root = path.join(__dirname, '..');
   const marker = crypto.randomUUID();
   const actors = [
-    { key: 'admin', baseRole: 'admin', role: 'system_admin', expected: ['admissions', 'medical', 'billing', 'reports', 'administration'] },
-    { key: 'admissions', baseRole: 'receptionist', role: 'admissions', expected: ['admissions', 'billing'] },
+    { key: 'admin', baseRole: 'admin', role: 'system_admin', expected: ['medical', 'admissions', 'patients', 'billing', 'reports', 'configuration', 'security-audit'] },
+    { key: 'admissions', baseRole: 'receptionist', role: 'admissions', expected: ['admissions', 'patients'] },
     { key: 'doctor', baseRole: 'doctor', role: 'doctor', expected: ['medical'] },
-    { key: 'nurse', baseRole: 'receptionist', role: 'nurse', expected: ['medical'] },
-    { key: 'audit', baseRole: 'admin', role: 'audit_security', expected: ['reports'] },
+    { key: 'nurse', baseRole: 'receptionist', role: 'nurse', expected: [] },
+    { key: 'audit', baseRole: 'admin', role: 'audit_security', expected: ['reports', 'security-audit'] },
   ];
   const users = [];
   const sessions = new Map();

@@ -16,8 +16,10 @@ test('muestra a recepción la sala de espera y el directorio, sin facturación',
   assert.deepEqual(modulesFor('admissions'), ['admissions', 'patients']);
 });
 
-test('limita administración a facturación, reportes, configuración y auditoría', () => {
-  assert.deepEqual(modulesFor('system_admin'), ['billing', 'reports', 'configuration', 'security-audit']);
+test('el administrador del sistema puede consultar todos los módulos', () => {
+  assert.deepEqual(modulesFor('system_admin'), [
+    'medical', 'admissions', 'patients', 'billing', 'reports', 'configuration', 'security-audit',
+  ]);
 });
 
 test('limita auditoría a reportes y eventos de seguridad de solo lectura', () => {

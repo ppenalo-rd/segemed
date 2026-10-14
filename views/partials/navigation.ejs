@@ -4,11 +4,11 @@
         <div class="d-flex flex-wrap align-items-center gap-2">
             <a class="btn btn-sm btn-outline-dark" href="/dashboard">Menú principal</a>
             <a class="btn btn-sm btn-outline-primary" href="/account/profile">Mi perfil</a>
-            <% if (currentUser.roles.includes('doctor')) { %>
+            <% if (currentUser.roles.includes('doctor') || currentUser.roles.includes('system_admin')) { %>
                 <a class="btn btn-sm btn-outline-success" href="/appointments/today">Consultorio · Hoy</a>
                 <a class="btn btn-sm btn-outline-primary" href="/pacientes">Directorio clínico</a>
             <% } %>
-            <% if (currentUser.roles.includes('admissions')) { %>
+            <% if (currentUser.roles.includes('admissions') || currentUser.roles.includes('system_admin')) { %>
                 <a class="btn btn-sm btn-outline-success" href="/agenda">Admisión · Sala de espera</a>
                 <a class="btn btn-sm btn-outline-primary" href="/pacientes">Pacientes</a>
             <% } %>

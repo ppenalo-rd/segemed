@@ -79,10 +79,13 @@ const DASHBOARD_SECTIONS = [
 
 function buildNavigationSections(userRoles) {
   const roles = Array.isArray(userRoles) ? userRoles : [];
+  const isSystemAdmin = roles.includes('system_admin');
   return DASHBOARD_SECTIONS
     .map((section) => ({
       ...section,
-      modules: section.modules.filter((module) => module.roles.some((role) => roles.includes(role))),
+      modules: section.modules.filter((module) => (
+        isSystemAdmin || module.roles.some((role) => roles.includes(role))
+      )),
     }))
     .filter((section) => section.modules.length > 0);
 }

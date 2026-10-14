@@ -232,7 +232,11 @@
                                 <tr id="appointment-<%= cita.id %>">
                                     <td class="fw-bold ps-3">
                                         <%= cita.first_name %> <%= cita.last_name %>
-                                        <% if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
+                                        <% if (currentUser.roles.includes('system_admin')) { %>
+                                            <a class="d-block small" href="/patients/<%= cita.patient_id %>/history#soap-history">
+                                                Consultar historial clínico
+                                            </a>
+                                        <% } else if (currentUser.roles.includes('doctor') && ['Scheduled', 'Waiting Room', 'In Consultation'].includes(cita.status)) { %>
                                             <a class="d-block small" href="/patients/<%= cita.patient_id %>/history?startSoap=1&amp;appointment_id=<%= cita.id %>#new-soap">
                                                 Abrir historia y atender
                                             </a>

@@ -14,6 +14,7 @@ const {
   canAssignRole,
   getActiveUserById,
   requireAuthentication,
+  requireActiveDoctor,
   requireRole,
   verifyCredentials,
 } = require('./auth');
@@ -1552,7 +1553,7 @@ function normalizeSoapDraftData(value) {
 }
 
 // Lee exclusivamente el borrador SOAP que pertenece al médico autenticado.
-app.get('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+app.get('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res, next) => {
   const { patientId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId)) {
     return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
@@ -1589,7 +1590,7 @@ app.get('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, re
 });
 
 // Guarda el borrador SOAP sin incorporarlo a la historia clínica definitiva.
-app.put('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+app.put('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res, next) => {
   const { patientId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId)) {
     return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
@@ -1655,7 +1656,7 @@ app.put('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, re
 });
 
 // Elimina únicamente el borrador del paciente y consulta del médico actual.
-app.delete('/patients/:patientId/soap-draft', requireRole('doctor'), async (req, res, next) => {
+app.delete('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res, next) => {
   const { patientId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId)) {
     return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
@@ -1920,7 +1921,7 @@ app.get('/patients/:id/history', async (req, res) => {
   }
 });
 
-app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
+app.post('/patients/:id/soap', requireActiveDoctor, async (req, res) => {
   const patientId = req.params.id;
   const {
     consultation_id,
@@ -2304,7 +2305,7 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
   }
 });
 
-app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireRole('doctor'), async (req, res) => {
+app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireActiveDoctor, async (req, res) => {
   const { patientId, consultId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(consultId)) {
     return res.status(400).send('Identificador de paciente o consulta no válido.');
@@ -2391,7 +2392,7 @@ app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireR
   }
 });
 
-app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireRole('doctor'), async (req, res) => {
+app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireActiveDoctor, async (req, res) => {
   const { patientId, prescriptionId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(prescriptionId)) {
     return res.status(400).send('Identificador de paciente o receta no válido.');
@@ -2451,7 +2452,7 @@ app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireRole(
   }
 });
 
-app.post('/patients/:patientId/prescriptions/:prescriptionId/cancel', requireRole('doctor'), async (req, res) => {
+app.post('/patients/:patientId/prescriptions/:prescriptionId/cancel', requireActiveDoctor, async (req, res) => {
   const { patientId, prescriptionId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(prescriptionId)) {
     return res.status(400).send('Identificador de paciente o receta no válido.');
