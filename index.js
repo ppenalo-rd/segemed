@@ -25,7 +25,7 @@ const {
   hashOtp,
   otpMatches,
 } = require('./services/otp');
-const { sendLoginOtp, sendPasswordChangeOtp, sendSoapModificationOtp } = require('./services/email');
+const { sendLoginOtp, sendPasswordChangeOtp } = require('./services/email');
 const { validateNewPassword } = require('./services/password-policy');
 const booking = require('./services/booking');
 const { findEligibleTodaysSoapAppointment } = require('./services/soap-appointments');
@@ -47,7 +47,6 @@ const { normalizeMedication, normalizePrescriptionItems } = require('./services/
 const {
   SOAP_EDIT_WINDOW_HOURS,
   buildSoapAuditChanges,
-  hashSoapEditPayload,
   isSoapEditWindowOpen,
 } = require('./services/soap-audit');
 const billing = require('./services/billing');
@@ -179,14 +178,6 @@ const passwordChangeVerifyRateLimit = rateLimit({
   legacyHeaders: false,
   handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
 });
-const soapEditOtpRequestRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 5,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  handler: (req, res) => res.status(429).json({ error: 'rate_limited' }),
-});
-
 function regenerateSession(req) {
   return new Promise((resolve, reject) => {
     req.session.regenerate((error) => (error ? reject(error) : resolve()));
@@ -1763,8 +1754,8 @@ app.get('/patients/:id/history', async (req, res) => {
     const queryHistorial = `
       SELECT 
         mc.id, mc.appointment_id, mc.created_at AS consultation_date,
-        mc.soap_last_saved_at,
-        mc.soap_last_saved_at > CURRENT_TIMESTAMP - ($2 * INTERVAL '1 hour') AS soap_editable,
+        mc.created_at <= CURRENT_TIMESTAMP
+          AND mc.created_at > CURRENT_TIMESTAMP - ($2 * INTERVAL '1 hour') AS soap_editable,
         ss.subjective_text AS subjective,
         ss.chief_complaint, ss.current_illness, ss.relevant_background,
         so.blood_pressure, so.heart_rate, so.temperature, so.weight, so.height, so.bmi, so.bmi_status,
@@ -1929,308 +1920,11 @@ app.get('/patients/:id/history', async (req, res) => {
   }
 });
 
-// Issues an email OTP bound to the authenticated doctor, patient, consultation, and SOAP payload.
-app.post(
-  '/patients/:patientId/consultations/:consultId/soap-edit-otp/request',
-  soapEditOtpRequestRateLimit,
-  requireRole('doctor'),
-  async (req, res, next) => {
-    res.set('Cache-Control', 'no-store');
-    const { patientId, consultId } = req.params;
-    const input = req.body?.soap_data;
-    if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(consultId)) {
-      return res.status(400).json({ error: 'Identificador de paciente o consulta no válido.' });
-    }
-
-    let payloadHash;
-    try {
-      payloadHash = hashSoapEditPayload(input);
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    const challengeId = crypto.randomUUID();
-    const code = generateOtp();
-    const userId = Number(req.session.user.id);
-    const client = await db.connect();
-    let doctor;
-    let expiresAt;
-    try {
-      await client.query('BEGIN');
-      const doctorResult = await client.query(
-        `SELECT u.id, u.name, u.email
-         FROM users u
-         WHERE u.id = $1 AND u.active = TRUE
-           AND EXISTS (
-             SELECT 1 FROM user_roles ur
-             JOIN roles r ON r.id = ur.role_id
-             WHERE ur.user_id = u.id AND r.role_key = 'doctor' AND r.active = TRUE
-           )
-         FOR UPDATE`,
-        [userId]
-      );
-      if (!doctorResult.rowCount) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Solo una cuenta médica activa puede modificar notas SOAP.' });
-      }
-      doctor = doctorResult.rows[0];
-      if (!doctor.email) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'La cuenta médica no tiene un correo registrado para la verificación.' });
-      }
-
-      const consultationResult = await client.query(
-        `SELECT mc.id, mc.soap_last_saved_at, clock_timestamp() AS database_now
-         FROM medical_consultations mc
-         WHERE mc.id = $1 AND mc.patient_id = $2
-         FOR UPDATE`,
-        [Number(consultId), Number(patientId)]
-      );
-      if (!consultationResult.rowCount) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'No se encontró la nota SOAP del paciente.' });
-      }
-      if (!isSoapEditWindowOpen(
-        consultationResult.rows[0].soap_last_saved_at,
-        consultationResult.rows[0].database_now
-      )) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: 'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.',
-        });
-      }
-
-      const existingChallenge = await client.query(
-        `SELECT resend_after > CURRENT_TIMESTAMP AS is_cooling_down
-         FROM soap_edit_otp_challenges
-         WHERE user_id = $1 AND consultation_id = $2
-         FOR UPDATE`,
-        [userId, Number(consultId)]
-      );
-      if (existingChallenge.rows[0]?.is_cooling_down) {
-        await client.query('ROLLBACK');
-        return res.status(429).json({ error: 'Espera antes de solicitar otro código de verificación.' });
-      }
-
-      const challengeResult = await client.query(
-        `INSERT INTO soap_edit_otp_challenges
-           (challenge_id, patient_id, consultation_id, user_id, otp_hash, payload_hash,
-            attempts, expires_at, resend_after, verified_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 0,
-                 CURRENT_TIMESTAMP + ($7 * INTERVAL '1 minute'),
-                 CURRENT_TIMESTAMP + ($8 * INTERVAL '1 second'), NULL)
-         ON CONFLICT (user_id, consultation_id) DO UPDATE
-         SET challenge_id = EXCLUDED.challenge_id,
-             patient_id = EXCLUDED.patient_id,
-             otp_hash = EXCLUDED.otp_hash,
-             payload_hash = EXCLUDED.payload_hash,
-             attempts = 0,
-             expires_at = EXCLUDED.expires_at,
-             resend_after = EXCLUDED.resend_after,
-             verified_at = NULL,
-             created_at = CURRENT_TIMESTAMP
-         RETURNING expires_at`,
-        [
-          challengeId,
-          Number(patientId),
-          Number(consultId),
-          userId,
-          hashOtp(code, sessionSecret),
-          payloadHash,
-          OTP_TTL_MINUTES,
-          OTP_RESEND_COOLDOWN_SECONDS,
-        ]
-      );
-      expiresAt = new Date(challengeResult.rows[0].expires_at);
-      await recordAccessEvent(client, req, {
-        eventType: 'soap_edit_otp_requested',
-        resourceType: 'consultation',
-        resourceId: consultId,
-        patientId,
-        userId,
-        details: { verification: 'email_otp' },
-      });
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK').catch((rollbackError) => {
-        console.error('Error al revertir la solicitud OTP de edición SOAP:', rollbackError.message);
-      });
-      return next(error);
-    } finally {
-      client.release();
-    }
-
-    try {
-      await sendSoapModificationOtp({
-        to: doctor.email,
-        name: doctor.name,
-        code,
-        expiresMinutes: OTP_TTL_MINUTES,
-      });
-    } catch (error) {
-      await db.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId])
-        .catch((cleanupError) => console.error('No se pudo limpiar el desafío OTP SOAP:', cleanupError.message));
-      await recordAccessEvent(db, req, {
-        eventType: 'soap_edit_otp_email_failed',
-        resourceType: 'consultation',
-        resourceId: consultId,
-        patientId,
-        userId,
-        details: { verification: 'email_otp' },
-      }).catch((auditError) => console.error('No se pudo auditar el fallo de correo OTP SOAP:', auditError.message));
-      console.error('No se pudo enviar el OTP para modificar una nota SOAP:', error.message);
-      return res.status(503).json({ error: 'No se pudo enviar el código. Inténtalo nuevamente o contacta al administrador.' });
-    }
-
-    req.session.soapEditChallengeId = challengeId;
-    return res.json({
-      challengeId,
-      maskedEmail: maskEmail(doctor.email),
-      expiresAt: expiresAt.toISOString(),
-    });
-  }
-);
-
-// Verifies the doctor OTP and marks the session-bound SOAP edit challenge as ready for one save.
-app.post(
-  '/patients/:patientId/consultations/:consultId/soap-edit-otp/verify',
-  otpVerifyRateLimit,
-  requireRole('doctor'),
-  async (req, res, next) => {
-    res.set('Cache-Control', 'no-store');
-    const { patientId, consultId } = req.params;
-    const challengeId = req.session.soapEditChallengeId;
-    const code = typeof req.body?.otp === 'string' ? req.body.otp : '';
-    if (!/^[1-9]\d*$/.test(patientId)
-        || !/^[1-9]\d*$/.test(consultId)
-        || !challengeId
-        || !/^[0-9a-f-]{36}$/i.test(challengeId)
-        || !/^\d{6}$/.test(code)) {
-      return res.status(400).json({ error: 'El código de verificación no es válido.' });
-    }
-
-    const userId = Number(req.session.user.id);
-    const client = await db.connect();
-    let failure = null;
-    try {
-      await client.query('BEGIN');
-      const challengeResult = await client.query(
-        `SELECT c.otp_hash, c.attempts, c.verified_at,
-                c.expires_at > CURRENT_TIMESTAMP AS is_unexpired,
-                mc.soap_last_saved_at,
-                clock_timestamp() AS database_now,
-                u.active,
-                EXISTS (
-                  SELECT 1 FROM user_roles ur
-                  JOIN roles r ON r.id = ur.role_id
-                  WHERE ur.user_id = u.id AND r.role_key = 'doctor' AND r.active = TRUE
-                ) AS is_doctor
-         FROM soap_edit_otp_challenges c
-         JOIN users u ON u.id = c.user_id
-         JOIN medical_consultations mc
-           ON mc.id = c.consultation_id AND mc.patient_id = c.patient_id
-         WHERE c.challenge_id = $1
-           AND c.user_id = $2 AND c.patient_id = $3 AND c.consultation_id = $4
-         FOR UPDATE OF c, u`,
-        [challengeId, userId, Number(patientId), Number(consultId)]
-      );
-
-      if (!challengeResult.rowCount || !challengeResult.rows[0].active || !challengeResult.rows[0].is_doctor) {
-        failure = 'challenge_missing';
-      } else {
-        const challenge = challengeResult.rows[0];
-        if (!isSoapEditWindowOpen(challenge.soap_last_saved_at, challenge.database_now)) {
-          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
-          failure = 'window_closed';
-        } else if (challenge.verified_at) {
-          // A repeated verify request is idempotent if the original response was lost.
-        } else if (!challenge.is_unexpired) {
-          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
-          failure = 'expired';
-        } else if (Number(challenge.attempts) >= OTP_MAX_ATTEMPTS) {
-          await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
-          failure = 'locked';
-        } else if (!otpMatches(code, challenge.otp_hash, sessionSecret)) {
-          const attemptsResult = await client.query(
-            `UPDATE soap_edit_otp_challenges
-             SET attempts = attempts + 1
-             WHERE challenge_id = $1
-             RETURNING attempts`,
-            [challengeId]
-          );
-          if (Number(attemptsResult.rows[0].attempts) >= OTP_MAX_ATTEMPTS) {
-            await client.query('DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1', [challengeId]);
-            failure = 'locked';
-          } else {
-            failure = 'invalid';
-          }
-        } else {
-          await client.query(
-            'UPDATE soap_edit_otp_challenges SET verified_at = CURRENT_TIMESTAMP WHERE challenge_id = $1',
-            [challengeId]
-          );
-        }
-      }
-
-      if (failure) {
-        await recordAccessEvent(client, req, {
-          eventType: 'soap_edit_otp_failed',
-          resourceType: 'consultation',
-          resourceId: consultId,
-          patientId,
-          userId,
-          details: { reason: failure },
-        });
-      } else {
-        await recordAccessEvent(client, req, {
-          eventType: 'soap_edit_otp_verified',
-          resourceType: 'consultation',
-          resourceId: consultId,
-          patientId,
-          userId,
-          details: { verification: 'email_otp' },
-        });
-      }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK').catch((rollbackError) => {
-        console.error('Error al revertir la verificación OTP SOAP:', rollbackError.message);
-      });
-      return next(error);
-    } finally {
-      client.release();
-    }
-
-    if (failure) {
-      if (failure === 'expired' || failure === 'locked'
-          || failure === 'challenge_missing' || failure === 'window_closed') {
-        delete req.session.soapEditChallengeId;
-      }
-      const status = failure === 'invalid' ? 400
-        : failure === 'locked' ? 429
-          : failure === 'window_closed' ? 409 : 410;
-      return res.status(status).json({
-        error: failure === 'invalid'
-          ? 'El código ingresado es incorrecto.'
-          : failure === 'window_closed'
-            ? 'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.'
-          : failure === 'expired'
-            ? 'El código venció. Solicita uno nuevo.'
-            : failure === 'locked'
-              ? 'Se agotaron los intentos. Solicita un nuevo código.'
-              : 'El desafío ya fue utilizado o dejó de estar disponible.',
-      });
-    }
-    return res.json({ verified: true, challengeId });
-  }
-);
-
 app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
   const patientId = req.params.id;
   const {
     consultation_id,
     appointment_id,
-    soap_edit_challenge_id: soapEditChallengeId,
     chief_complaint, current_illness, relevant_background, subjective,
     objective, assessment, plan, diagnostic_plan, therapeutic_plan,
     education_recommendations, follow_up_date, lab_results_summary,
@@ -2340,7 +2034,7 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
       consultId = consultRes.rows[0].id;
     } else {
       const existingConsultation = await client.query(
-        `SELECT id, soap_last_saved_at, clock_timestamp() AS database_now
+        `SELECT id, created_at, clock_timestamp() AS database_now
          FROM medical_consultations
          WHERE id = $1 AND patient_id = $2
          FOR UPDATE`,
@@ -2352,27 +2046,19 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
       }
       isExistingConsultation = true;
       if (!isSoapEditWindowOpen(
-        existingConsultation.rows[0].soap_last_saved_at,
+        existingConsultation.rows[0].created_at,
         existingConsultation.rows[0].database_now
       )) {
         await client.query('ROLLBACK');
-        delete req.session.soapEditChallengeId;
         return res.status(409).send(
           'La ventana de modificación de esta nota venció. La nota permanece disponible en modo lectura.'
         );
       }
     }
 
-    let soapEditChallenge = null;
     let doctorName = null;
     let previousSoapValues = null;
     if (isExistingConsultation) {
-      if (!soapEditChallengeId
-          || soapEditChallengeId !== req.session.soapEditChallengeId
-          || !/^[0-9a-f-]{36}$/i.test(soapEditChallengeId)) {
-        await client.query('ROLLBACK');
-        return res.status(403).send('Verifica el código enviado a tu correo antes de modificar esta nota SOAP.');
-      }
       const doctorResult = await client.query(
         `SELECT u.name
          FROM users u
@@ -2390,29 +2076,6 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
         return res.status(403).send('Solo una cuenta médica activa puede modificar notas SOAP.');
       }
       doctorName = doctorResult.rows[0].name;
-
-      const challengeResult = await client.query(
-        `SELECT payload_hash
-         FROM soap_edit_otp_challenges
-         WHERE challenge_id = $1 AND user_id = $2
-           AND patient_id = $3 AND consultation_id = $4
-           AND verified_at IS NOT NULL AND expires_at > CURRENT_TIMESTAMP
-           AND attempts < $5
-         FOR UPDATE`,
-        [
-          soapEditChallengeId,
-          Number(req.session.user.id),
-          Number(patientId),
-          Number(consultId),
-          OTP_MAX_ATTEMPTS,
-        ]
-      );
-      if (!challengeResult.rowCount
-          || challengeResult.rows[0].payload_hash !== hashSoapEditPayload(req.body)) {
-        await client.query('ROLLBACK');
-        return res.status(403).send('La verificación OTP expiró o los datos cambiaron. Solicita un nuevo código.');
-      }
-      soapEditChallenge = challengeResult.rows[0];
 
       const previousValuesResult = await client.query(
         `SELECT ss.chief_complaint, ss.current_illness, ss.relevant_background,
@@ -2612,28 +2275,17 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
         ]
       );
     }
-    if (soapEditChallenge) {
-      await client.query(
-        'DELETE FROM soap_edit_otp_challenges WHERE challenge_id = $1',
-        [soapEditChallengeId]
-      );
+    if (isExistingConsultation) {
       await recordAccessEvent(client, req, {
         eventType: 'clinical_soap_modified',
         resourceType: 'consultation',
         resourceId: consultId,
         patientId,
         details: {
-          verification: 'email_otp',
           changed_fields: soapAuditChanges.map((change) => change.fieldName),
         },
       });
     }
-    await client.query(
-      `UPDATE medical_consultations
-       SET soap_last_saved_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND patient_id = $2`,
-      [Number(consultId), Number(patientId)]
-    );
     await client.query(
       `DELETE FROM soap_note_drafts
        WHERE patient_id = $1 AND user_id = $2
@@ -2641,7 +2293,6 @@ app.post('/patients/:id/soap', requireRole('doctor'), async (req, res) => {
       [Number(patientId), Number(req.session.user.id), parseSoapDraftConsultationId(consultation_id)]
     );
     await client.query('COMMIT');
-    if (soapEditChallenge) delete req.session.soapEditChallengeId;
     res.redirect(`/patients/${patientId}/history`);
 
   } catch (err) {

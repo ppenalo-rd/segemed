@@ -40,12 +40,6 @@
             overflow-y: auto;
             z-index: 1080;
         }
-        #soapEditOtpModal {
-            z-index: 1060;
-        }
-        .modal-backdrop.soap-edit-otp-backdrop {
-            z-index: 1055;
-        }
     </style>
 </head>
 <body class="bg-light">
@@ -406,8 +400,6 @@
                 <input type="hidden" id="appointment_id" name="appointment_id"
                        value="<%= selectedAppointmentId || '' %>"
                        data-requested-appointment-id="<%= selectedAppointmentId || '' %>">
-                <input type="hidden" id="soap_edit_challenge_id" name="soap_edit_challenge_id" value="">
-
                 <div class="modal-header bg-success text-white">
                     <h5 class="modal-title fw-bold" id="modalSoapLabel">Nueva Evolución Clínica - Estructura SOAP</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -631,32 +623,6 @@
     </div>
 </div>
 
-<div class="modal fade" id="soapEditOtpModal" tabindex="-1" aria-labelledby="soapEditOtpTitle"
-     aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-0 shadow">
-            <div class="modal-header bg-primary text-white">
-                <h2 class="modal-title h5 fw-bold" id="soapEditOtpTitle">Verificar modificación SOAP</h2>
-            </div>
-            <form id="soapEditOtpForm">
-                <div class="modal-body">
-                    <p>Enviamos un código de 6 dígitos a <strong id="soapEditOtpEmail"></strong>. Introduce el código para autorizar el guardado de los cambios.</p>
-                    <div id="soapEditOtpFeedback" class="alert alert-info" role="status" aria-live="polite"></div>
-                    <label class="form-label fw-semibold" for="soapEditOtpCode">Código de verificación</label>
-                    <input class="form-control form-control-lg text-center" id="soapEditOtpCode"
-                           name="otp" inputmode="numeric" autocomplete="one-time-code"
-                           pattern="[0-9]{6}" maxlength="6" required>
-                    <p class="small text-muted mt-2 mb-0">El código vence en <span id="soapEditOtpCountdown"></span>.</p>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Volver a la nota</button>
-                    <button type="submit" class="btn btn-primary fw-bold" id="soapEditOtpSubmit">Verificar y guardar</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-
 <!-- Bootstrap 5 JS Bundle y Scripts de Control -->
 <script src="/assets/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="/assets/js/cie10-autocomplete.js"></script>
@@ -675,11 +641,6 @@
         },
     });
     const soapModal = document.getElementById('modalNuevaNotaSoap');
-    const soapEditOtpModalElement = document.getElementById('soapEditOtpModal');
-    const soapEditOtpModal = bootstrap.Modal.getOrCreateInstance(soapEditOtpModalElement);
-    const soapEditOtpForm = document.getElementById('soapEditOtpForm');
-    const soapEditOtpFeedback = document.getElementById('soapEditOtpFeedback');
-    const soapEditOtpCode = document.getElementById('soapEditOtpCode');
     const soapDraftStatus = document.getElementById('soapDraftStatus');
     let soapDraftTimer;
     let soapDraftSaveChain = Promise.resolve(true);
@@ -687,19 +648,6 @@
     let soapDraftEditedWhileRestoring = false;
     let soapAllowSubmit = false;
     let soapLastSavedSnapshot = null;
-    let soapOtpApprovedChallengeId = '';
-    let soapOtpExpiresAt = null;
-    let soapOtpCountdownTimer;
-
-    const soapOtpFieldNames = [
-        'chief_complaint', 'current_illness', 'relevant_background',
-        'blood_pressure', 'heart_rate', 'temperature', 'weight', 'height',
-        'respiratory_rate', 'oxygen_saturation', 'objective', 'lab_results_summary',
-        'assessment', 'cie10_primary_code', 'cie10_secondary_code', 'cie10_tertiary_code',
-        'diagnostic_plan', 'therapeutic_plan', 'plan', 'education_recommendations', 'follow_up_date',
-        'study_priority', 'study_instructions', 'study_ids',
-    ];
-
     // Administra la captura, restauración y sincronización segura del borrador SOAP.
     function setSoapDraftStatus(message, status = 'info') {
         soapDraftStatus.className = `alert alert-${status} soap-draft-status py-2 mb-3`;
@@ -853,11 +801,13 @@
                 setSoapDraftStatus('Borrador guardado automáticamente.', 'success');
                 return true;
             } catch (error) {
-                if (error.code === 'session_expired') {
-                    setSoapDraftStatus('La sesión expiró. Inicia sesión nuevamente para continuar con esta evolución.', 'danger');
-                } else {
-                    setSoapDraftStatus('No se pudo guardar el borrador. Revisa la conexión; la evolución completa aún puede guardarse al finalizar.', 'warning');
-                }
+                setSoapDraftStatus(
+                    soapRequestErrorMessage(
+                        error,
+                        'No se pudo guardar el borrador. Revisa la conexión; la evolución completa aún puede guardarse al finalizar.'
+                    ),
+                    error.code === 'session_expired' ? 'danger' : 'warning'
+                );
                 console.error('Error al guardar borrador SOAP:', error);
                 return false;
             }
@@ -865,103 +815,6 @@
         soapDraftSaveChain = saveOperation;
         return saveOperation;
     }
-
-    // Requests an OTP for the exact saved-note values currently shown in the SOAP form.
-    async function requestSoapEditOtp() {
-        const consultationId = soapForm.elements.consultation_id.value;
-        const patientId = soapDraftPatientId;
-        const soapData = {};
-        soapOtpFieldNames.forEach((name) => {
-            if (name === 'study_ids') {
-                soapData[name] = [...soapForm.querySelectorAll('.study-order-option:checked')]
-                    .map((field) => field.value);
-                return;
-            }
-            const field = soapForm.elements.namedItem(name);
-            soapData[name] = field ? field.value : '';
-        });
-        soapEditOtpFeedback.className = 'alert alert-info';
-        soapEditOtpFeedback.textContent = 'Solicitando código de verificación…';
-        soapEditOtpCode.value = '';
-        document.getElementById('soapEditOtpSubmit').disabled = false;
-        try {
-            const { response, result } = await soapCsrfClient.request(
-                `/patients/${encodeURIComponent(patientId)}/consultations/${encodeURIComponent(consultationId)}/soap-edit-otp/request`,
-                {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ soap_data: soapData }),
-                }
-            );
-            if (!response.ok) throw new Error(result.error || 'No se pudo solicitar la verificación.');
-            document.getElementById('soapEditOtpEmail').textContent = result.maskedEmail;
-            soapOtpExpiresAt = new Date(result.expiresAt);
-            soapEditOtpFeedback.className = 'alert alert-info';
-            soapEditOtpFeedback.textContent = 'El código fue enviado. La nota solo se actualizará después de verificarlo.';
-            soapEditOtpModal.show();
-            updateSoapOtpCountdown();
-            clearInterval(soapOtpCountdownTimer);
-            soapOtpCountdownTimer = window.setInterval(updateSoapOtpCountdown, 1000);
-        } catch (error) {
-            soapEditOtpFeedback.className = 'alert alert-danger';
-            soapEditOtpFeedback.textContent = soapRequestErrorMessage(
-                error,
-                'No se pudo solicitar la verificación.'
-            );
-        }
-    }
-
-    // Displays the remaining server-issued OTP lifetime in the verification dialog.
-    function updateSoapOtpCountdown() {
-        const remainingSeconds = Math.max(0, Math.ceil((soapOtpExpiresAt - Date.now()) / 1000));
-        const minutes = Math.floor(remainingSeconds / 60);
-        const seconds = String(remainingSeconds % 60).padStart(2, '0');
-        document.getElementById('soapEditOtpCountdown').textContent = `${minutes}:${seconds}`;
-        if (remainingSeconds === 0) {
-            clearInterval(soapOtpCountdownTimer);
-            document.getElementById('soapEditOtpSubmit').disabled = true;
-            soapEditOtpFeedback.className = 'alert alert-warning';
-            soapEditOtpFeedback.textContent = 'El código venció. Cierra esta ventana y vuelve a solicitar la verificación.';
-        }
-    }
-
-    // Verifies the OTP before allowing the existing-note form to submit once.
-    soapEditOtpForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const consultationId = soapForm.elements.consultation_id.value;
-        document.getElementById('soapEditOtpSubmit').disabled = true;
-        soapEditOtpFeedback.className = 'alert alert-info';
-        soapEditOtpFeedback.textContent = 'Verificando código…';
-        try {
-            const { response, result } = await soapCsrfClient.request(
-                `/patients/${encodeURIComponent(soapDraftPatientId)}/consultations/${encodeURIComponent(consultationId)}/soap-edit-otp/verify`,
-                {
-                    method: 'POST',
-                    headers: {
-                        Accept: 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ otp: soapEditOtpCode.value }),
-                }
-            );
-            if (!response.ok) throw new Error(result.error || 'El código no pudo verificarse.');
-            soapOtpApprovedChallengeId = result.challengeId;
-            soapForm.elements.soap_edit_challenge_id.value = result.challengeId;
-            clearInterval(soapOtpCountdownTimer);
-            soapEditOtpModal.hide();
-            soapForm.requestSubmit();
-        } catch (error) {
-            soapEditOtpFeedback.className = 'alert alert-danger';
-            soapEditOtpFeedback.textContent = soapRequestErrorMessage(
-                error,
-                'El código no pudo verificarse.'
-            );
-            document.getElementById('soapEditOtpSubmit').disabled = false;
-        }
-    });
 
     function scheduleSoapDraftSave() {
         if (soapDraftRestoring) {
@@ -1012,12 +865,17 @@
             return;
         }
         event.preventDefault();
-        if (soapForm.elements.consultation_id.value && !soapOtpApprovedChallengeId) {
-            await requestSoapEditOtp();
-            return;
-        }
         clearTimeout(soapDraftTimer);
         await saveSoapDraft();
+        try {
+            await soapCsrfClient.refreshToken();
+        } catch (error) {
+            setSoapDraftStatus(
+                soapRequestErrorMessage(error, 'No se pudo validar la sesión para guardar la evolución.'),
+                'danger'
+            );
+            return;
+        }
         soapAllowSubmit = true;
         if (event.submitter) soapForm.requestSubmit(event.submitter);
         else soapForm.requestSubmit();
@@ -1047,8 +905,6 @@
     function limpiarModal() {
         soapForm.reset();
         document.getElementById('consultation_id').value = '';
-        document.getElementById('soap_edit_challenge_id').value = '';
-        soapOtpApprovedChallengeId = '';
         const appointmentField = document.getElementById('appointment_id');
         appointmentField.value = appointmentField.dataset.requestedAppointmentId || '';
         document.querySelectorAll('.cie10-code').forEach((input) => {
@@ -1108,8 +964,6 @@
             throw new Error('No se pudo inicializar el formulario de edición SOAP.');
         }
         soapForm.elements.consultation_id.value = consultationId;
-        document.getElementById('soap_edit_challenge_id').value = '';
-        soapOtpApprovedChallengeId = '';
         const appointmentField = document.getElementById('appointment_id');
         appointmentField.value = btn.getAttribute('data-appointment-id') || '';
         

@@ -59,15 +59,15 @@ test('refresca y reintenta una sola vez solo ante rechazo explícito de token CS
     },
   });
 
-  const result = await client.request('/patients/7/consultations/11/soap-edit-otp/request', {
-    method: 'POST',
+  const result = await client.request('/patients/7/soap-draft', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ soap_data: {} }),
+    body: JSON.stringify({ data: {} }),
   });
 
   assert.equal(result.result.verified, true);
   assert.equal(heartbeatCount, 2);
-  assert.equal(calls.filter((call) => call.url.includes('/soap-edit-otp/request')).length, 2);
+  assert.equal(calls.filter((call) => call.url === '/patients/7/soap-draft').length, 2);
   assert.equal(calls[1].options.headers['X-CSRF-Token'], 'token-1');
   assert.equal(calls[3].options.headers['X-CSRF-Token'], 'token-2');
 });
