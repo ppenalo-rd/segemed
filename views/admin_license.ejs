@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Licencia local | SIGEMED</title>
+    <link href="/assets/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<%- include('partials/navigation') %>
+
+<main class="container py-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <p class="text-primary fw-semibold mb-1">Administración local</p>
+            <h1 class="h2 fw-bold mb-1">Licencia SIGEMED</h1>
+            <p class="text-muted mb-0">Estado de activación y renovación de este equipo.</p>
+        </div>
+        <a class="btn btn-outline-secondary" href="/dashboard">Menú principal</a>
+    </div>
+
+    <% if (success) { %>
+        <div class="alert alert-success" role="status">La licencia firmada se instaló y validó correctamente.</div>
+    <% } %>
+    <% if (error) { %>
+        <div class="alert alert-danger" role="alert"><%= error %></div>
+    <% } %>
+
+    <% const active = licenseStatus && licenseStatus.status === 'active'; %>
+    <% const developmentMode = active && licenseStatus.reason === 'development_mode'; %>
+    <section class="card border-0 shadow-sm mb-4" aria-labelledby="license-status-title">
+        <div class="card-header <%= active ? 'bg-success' : 'bg-warning' %> <%= active ? 'text-white' : 'text-dark' %>">
+            <h2 class="h5 fw-bold mb-0" id="license-status-title">
+                <%= developmentMode ? 'Validación deshabilitada (desarrollo)' : (active ? 'Licencia activa' : 'Modo de solo lectura') %>
+            </h2>
+        </div>
+        <div class="card-body">
+            <dl class="row mb-0">
+                <dt class="col-sm-4">Estado</dt>
+                <dd class="col-sm-8"><%= licenseStatus.reason || 'Sin estado disponible' %></dd>
+                <dt class="col-sm-4">Identificador de instalación</dt>
+                <dd class="col-sm-8"><code><%= licenseStatus.installationId || 'No disponible' %></code></dd>
+                <% if (licenseStatus.license) { %>
+                    <dt class="col-sm-4">Identificador de licencia</dt>
+                    <dd class="col-sm-8"><%= licenseStatus.license.licenseId %></dd>
+                    <dt class="col-sm-4">Duración</dt>
+                    <dd class="col-sm-8"><%= licenseStatus.license.durationDays %> días</dd>
+                    <dt class="col-sm-4">Vence (UTC)</dt>
+                    <dd class="col-sm-8"><%= licenseStatus.license.expiresAt %></dd>
+                    <dt class="col-sm-4">Días restantes</dt>
+                    <dd class="col-sm-8"><%= licenseStatus.license.daysRemaining %></dd>
+                <% } %>
+            </dl>
+            <% if (!active) { %>
+                <p class="alert alert-warning mt-3 mb-0">
+                    <%= developmentMode
+                        ? 'El enforcement está deshabilitado en este entorno de desarrollo.'
+                        : 'Las historias existentes, los reportes y los respaldos continúan disponibles.' %>
+                    Las escrituras clínicas requieren una licencia válida.
+                </p>
+            <% } %>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm" aria-labelledby="license-import-title">
+        <div class="card-header bg-white">
+            <h2 class="h5 fw-bold mb-0" id="license-import-title">Instalar o renovar licencia</h2>
+        </div>
+        <div class="card-body">
+            <p class="text-muted">
+                Selecciona el archivo firmado emitido por SIGEMED o pega su contenido JSON.
+                La licencia debe corresponder al identificador de instalación mostrado arriba.
+            </p>
+            <form method="POST" action="/admin/license">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <div class="mb-3">
+                    <label for="licenseFile" class="form-label fw-semibold">Archivo de licencia</label>
+                    <input id="licenseFile" class="form-control" type="file" accept=".json,application/json">
+                </div>
+                <div class="mb-3">
+                    <label for="licenseJson" class="form-label fw-semibold">Contenido de licencia firmada</label>
+                    <textarea id="licenseJson" name="license_json" class="form-control font-monospace" rows="7"
+                              maxlength="16384" required></textarea>
+                </div>
+                <button class="btn btn-primary" type="submit">Validar e instalar licencia</button>
+            </form>
+        </div>
+    </section>
+</main>
+
+<script>
+(() => {
+    const fileInput = document.getElementById('licenseFile');
+    const licenseText = document.getElementById('licenseJson');
+    fileInput.addEventListener('change', async () => {
+        const [file] = fileInput.files || [];
+        if (!file) return;
+        if (file.size > 16 * 1024) {
+            fileInput.value = '';
+            licenseText.setCustomValidity('El archivo no puede superar 16 KB.');
+            licenseText.reportValidity();
+            licenseText.setCustomValidity('');
+            return;
+        }
+        try {
+            licenseText.value = await file.text();
+        } catch {
+            fileInput.value = '';
+            licenseText.setCustomValidity('No se pudo leer el archivo seleccionado.');
+            licenseText.reportValidity();
+            licenseText.setCustomValidity('');
+        }
+    });
+})();
+</script>
+</body>
+</html>

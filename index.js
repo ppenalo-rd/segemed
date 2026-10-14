@@ -1,5 +1,6 @@
 require('dotenv').config();
 const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
 const express = require('express');
@@ -54,7 +55,15 @@ const billing = require('./services/billing');
 const reports = require('./services/reports');
 const { recordAccessEvent } = require('./services/audit');
 const { buildNavigationSections } = require('./services/navigation');
+const {
+  createClinicalLicenseGuard,
+  createLicenseRuntime,
+  readWindowsInstallationId,
+} = require('./services/license-runtime');
+const { createWindowsLicenseStateStore } = require('./services/windows-license-state-store');
 const app = express();
+let licenseRuntime = null;
+const requireClinicalLicense = createClinicalLicenseGuard(() => licenseRuntime);
 
 const isProduction = process.env.NODE_ENV === 'production';
 const configuredSessionSecret = process.env.SESSION_SECRET;
@@ -560,6 +569,55 @@ app.use((req, res, next) => {
 app.get('/dashboard', (req, res) => {
   const sections = buildNavigationSections(req.session.user.roles);
   res.render('dashboard', { sections });
+});
+
+app.get('/admin/license', requireRole('system_admin'), (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.render('admin_license', {
+    licenseStatus: licenseRuntime?.getStatus() || {
+      status: 'read_only',
+      reason: 'license_not_initialized',
+      installationId: null,
+      license: null,
+    },
+    error: null,
+    success: req.query.updated === '1',
+  });
+});
+
+app.post('/admin/license', requireRole('system_admin'), async (req, res, next) => {
+  const licenseContent = typeof req.body.license_json === 'string'
+    ? req.body.license_json.trim()
+    : '';
+  if (!licenseContent || Buffer.byteLength(licenseContent, 'utf8') > 16 * 1024) {
+    return res.status(400).render('admin_license', {
+      licenseStatus: licenseRuntime?.getStatus() || {
+        status: 'read_only',
+        reason: 'license_not_initialized',
+        installationId: null,
+        license: null,
+      },
+      error: 'Pega un archivo de licencia firmado válido de hasta 16 KB.',
+      success: false,
+    });
+  }
+  try {
+    if (!licenseRuntime) throw new Error('El servicio de licencias todavía no está inicializado.');
+    await licenseRuntime.installLicense(licenseContent);
+    return res.redirect('/admin/license?updated=1');
+  } catch (error) {
+    const statusCode = error.code === 'clock_rollback' ? 423 : 400;
+    return res.status(statusCode).render('admin_license', {
+      licenseStatus: licenseRuntime?.getStatus() || {
+        status: 'read_only',
+        reason: 'license_not_initialized',
+        installationId: null,
+        license: null,
+      },
+      error: error.message,
+      success: false,
+    });
+  }
 });
 
 // Renders the signed-in user's account settings without exposing password data.
@@ -1590,7 +1648,7 @@ app.get('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res,
 });
 
 // Guarda el borrador SOAP sin incorporarlo a la historia clínica definitiva.
-app.put('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res, next) => {
+app.put('/patients/:patientId/soap-draft', requireActiveDoctor, requireClinicalLicense, async (req, res, next) => {
   const { patientId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId)) {
     return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
@@ -1656,7 +1714,7 @@ app.put('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res,
 });
 
 // Elimina únicamente el borrador del paciente y consulta del médico actual.
-app.delete('/patients/:patientId/soap-draft', requireActiveDoctor, async (req, res, next) => {
+app.delete('/patients/:patientId/soap-draft', requireActiveDoctor, requireClinicalLicense, async (req, res, next) => {
   const { patientId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId)) {
     return res.status(400).json({ error: 'El identificador de paciente no es válido.' });
@@ -1921,7 +1979,7 @@ app.get('/patients/:id/history', async (req, res) => {
   }
 });
 
-app.post('/patients/:id/soap', requireActiveDoctor, async (req, res) => {
+app.post('/patients/:id/soap', requireActiveDoctor, requireClinicalLicense, async (req, res) => {
   const patientId = req.params.id;
   const {
     consultation_id,
@@ -2305,7 +2363,7 @@ app.post('/patients/:id/soap', requireActiveDoctor, async (req, res) => {
   }
 });
 
-app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireActiveDoctor, async (req, res) => {
+app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireActiveDoctor, requireClinicalLicense, async (req, res) => {
   const { patientId, consultId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(consultId)) {
     return res.status(400).send('Identificador de paciente o consulta no válido.');
@@ -2392,7 +2450,7 @@ app.post('/patients/:patientId/consultations/:consultId/prescriptions', requireA
   }
 });
 
-app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireActiveDoctor, async (req, res) => {
+app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireActiveDoctor, requireClinicalLicense, async (req, res) => {
   const { patientId, prescriptionId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(prescriptionId)) {
     return res.status(400).send('Identificador de paciente o receta no válido.');
@@ -2452,7 +2510,7 @@ app.post('/patients/:patientId/prescriptions/:prescriptionId/sign', requireActiv
   }
 });
 
-app.post('/patients/:patientId/prescriptions/:prescriptionId/cancel', requireActiveDoctor, async (req, res) => {
+app.post('/patients/:patientId/prescriptions/:prescriptionId/cancel', requireActiveDoctor, requireClinicalLicense, async (req, res) => {
   const { patientId, prescriptionId } = req.params;
   if (!/^[1-9]\d*$/.test(patientId) || !/^[1-9]\d*$/.test(prescriptionId)) {
     return res.status(400).send('Identificador de paciente o receta no válido.');
@@ -4715,7 +4773,75 @@ app.get('/reports/export/:type/:format', requireRole(...reportRoles), async (req
   }
 });
 
+// Carga la licencia antes de aceptar peticiones y deja el enforcement cerrado ante cualquier fallo.
+async function initializeLicenseRuntime() {
+  const configuredEnforcement = process.env.SIGEMED_LICENSE_ENFORCEMENT?.trim().toLowerCase() || undefined;
+  if (configuredEnforcement !== undefined && !['true', 'false'].includes(configuredEnforcement)) {
+    throw new Error('SIGEMED_LICENSE_ENFORCEMENT debe ser true o false.');
+  }
+  const enforcementEnabled = isProduction || configuredEnforcement === 'true';
+  let installationId = null;
+  let stateStore = null;
+  let publicKey = null;
+
+  if (enforcementEnabled) {
+    if (process.platform === 'win32') {
+      try {
+        installationId = await readWindowsInstallationId();
+        const licenseDirectory = process.env.SIGEMED_LICENSE_STATE_DIR
+          || path.win32.join(process.env.ProgramData || 'C:\\ProgramData', 'SIGEMED', 'License');
+        stateStore = createWindowsLicenseStateStore({
+          filePath: path.win32.join(licenseDirectory, 'clock-state.bin'),
+          licensePath: path.win32.join(licenseDirectory, 'license.bin'),
+        });
+      } catch (error) {
+        console.error('No se pudo preparar la identificación o el almacén protegido de licencias:', error.message);
+      }
+    } else {
+      console.error('Enforcement de licencias solicitado fuera de Windows; las escrituras clínicas quedarán bloqueadas.');
+    }
+
+    const publicKeyPath = process.env.SIGEMED_LICENSE_PUBLIC_KEY_PATH;
+    if (publicKeyPath) {
+      try {
+        publicKey = await fs.readFile(publicKeyPath, 'utf8');
+        crypto.createPublicKey(publicKey);
+      } catch (error) {
+        publicKey = null;
+        console.error('No se pudo cargar la clave pública de licencias; el sistema quedará en solo lectura:', error.message);
+      }
+    } else {
+      console.error('SIGEMED_LICENSE_PUBLIC_KEY_PATH no está configurada; el sistema quedará en solo lectura.');
+    }
+  }
+
+  licenseRuntime = createLicenseRuntime({
+    licenseStore: stateStore,
+    stateStore,
+    publicKey,
+    installationId,
+    enforcementEnabled,
+  });
+  if (enforcementEnabled) {
+    try {
+      await licenseRuntime.refresh();
+    } catch (error) {
+      console.error('No se pudo validar la licencia al iniciar; las escrituras clínicas quedarán bloqueadas:', error.message);
+    }
+  }
+  licenseRuntime.start();
+  const licenseStatus = licenseRuntime.getStatus();
+  console.info(`Estado de licencia SIGEMED: ${licenseStatus.status} (${licenseStatus.reason}).`);
+}
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor EMR corriendo en el puerto ${PORT}`);
-});
+initializeLicenseRuntime()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Servidor EMR corriendo en el puerto ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error('No se pudo iniciar el runtime de licencias:', error);
+    process.exitCode = 1;
+  });
